@@ -39,7 +39,7 @@
 - Python 3.9 或更高版本
 - Google Chrome
 - 可访问 Bilibili 的网络环境
-- 一个可正常登录的 Bilibili 账号
+- 一个可正常登录的 Bilibili 账号(得到cookie)
 
 `zoneinfo` 用于把时间戳转换为中国时区时间，因此需要 Python 3.9 以上。
 
@@ -113,12 +113,6 @@ python crawler_comment.py BV1V3Yn6wENr --workers 8
 output/{UP主}_{标题}_{BV号}/
 ```
 
-例如：
-
-```text
-output/漪棘_冰主初显威！0金7人连打满星9月深渊_BV1vJeW6jEEu/
-```
-
 标题中的 `?`、`:`、`/`、`\` 等非法文件名字符会替换为 `_`。
 
 典型目录内容：
@@ -189,11 +183,7 @@ CSV 列如下：
 | `state` | 评论状态，`0` 表示正常 |
 | `image_urls` | 评论图片URL，多个地址用 `|` 分隔 |
 
-图片只保存 URL，不下载图片文件。例如：
-
-```text
-https://i0.hdslb.com/bfs/new_dyn/a.jpg|https://i0.hdslb.com/bfs/new_dyn/b.jpg
-```
+图片只保存 URL，不下载图片文件。
 
 评论正文中的连续空格会压缩为一个空格，连续换行会转换为一个可见的
 `\n` 字符。没有图片时 `image_urls` 列为空。

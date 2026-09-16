@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from login import load_state
+from login import get_cookie_header
 
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
@@ -83,18 +83,6 @@ MIXIN_KEY_ENC_TAB = [
 ]
 
 
-def get_cookie_header():
-    """从 Playwright 登录状态中生成请求 Cookie。"""
-    state = load_state()
-
-    if not state:
-        raise RuntimeError("没有可用的登录状态，请先运行 login.py")
-
-    return "; ".join(
-        f'{item["name"]}={item["value"]}' for item in state.get("cookies", [])
-    )
-
-
 def request_json(url, cookie):
     """请求 Bilibili JSON 接口，并检查业务错误码。"""
     request = urllib.request.Request(
@@ -125,7 +113,7 @@ def request_json(url, cookie):
 
 
 def get_wbi_mixin_key(cookie):
-    """从 nav 接口取得 WBI 密钥。"""
+    """生成mixin_key，用于 WBI 签名。"""
     nav = request_json(f"{API_BASE}/x/web-interface/nav", cookie)
     img_url = nav.get("wbi_img", {}).get("img_url", "")
     sub_url = nav.get("wbi_img", {}).get("sub_url", "")
@@ -141,7 +129,7 @@ def get_wbi_mixin_key(cookie):
 
 
 def sign_wbi_params(params, mixin_key):
-    """为播放器接口参数生成 WBI 签名。"""
+    """生成 WBI 签名。"""
     signed_params = {**params, "wts": int(time.time())}
     query = urllib.parse.urlencode(sorted(signed_params.items()))
     w_rid = hashlib.md5(f"{query}{mixin_key}".encode()).hexdigest()

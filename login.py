@@ -38,6 +38,20 @@ def load_state():
         return None
 
 
+def get_cookie_header(state=None):
+    """读取登录状态并生成请求 Cookie，也可以直接传入 state。"""
+    if state is None:
+        state = load_state()
+
+    if not state:
+        raise RuntimeError("没有可用的登录状态，请先运行 login.py")
+
+    return "; ".join(
+        f'{cookie["name"]}={cookie["value"]}'
+        for cookie in state.get("cookies", [])
+    )
+
+
 # =========================
 # 2. 检查本地 cookie
 # =========================
@@ -74,9 +88,7 @@ def check_login_online():
     if state is None:
         return False
 
-    cookie_header = "; ".join(
-        f'{c["name"]}={c["value"]}' for c in state.get("cookies", [])
-    )
+    cookie_header = get_cookie_header(state)
 
     request = urllib.request.Request(
         "https://api.bilibili.com/x/web-interface/nav",
