@@ -1,12 +1,13 @@
 """
-字幕和弹幕爬取入口。
+Bilibili 数据爬取入口。
 
 整体思路：
 1. 从命令行读取 BV 号，未提供时使用 DEFAULT_BVID。
 2. 先确保 Bilibili 登录状态可用。
 3. 保存视频信息。
-4. 下载该视频的字幕。
-5. 再打开视频并采集弹幕。
+4. 下载全部一级评论。
+5. 下载该视频的字幕。
+6. 再打开视频并采集弹幕。
 """
 
 import argparse
@@ -19,10 +20,11 @@ DEFAULT_BVID = "BV1V3Yn6wENr"
 
 def main():
     from crawler_dm import goto
+    from crawler_comment import crawl_comments
     from crawler_info import crawl_video_info
     from crawler_subtitle import crawl_subtitles
 
-    parser = argparse.ArgumentParser(description="下载 Bilibili 字幕和弹幕")
+    parser = argparse.ArgumentParser(description="下载 Bilibili 视频数据")
     parser.add_argument(
         "bvid",
         nargs="?",
@@ -33,9 +35,10 @@ def main():
 
     print("视频：", args.bvid)
 
-    # 先确保登录态可用，再依次下载字幕和弹幕
+    # 先确保登录态可用，再依次下载视频信息、评论、字幕和弹幕
     ensure_login()
     crawl_video_info(args.bvid)
+    crawl_comments(args.bvid)
     crawl_subtitles(args.bvid)
     goto(args.bvid)
 

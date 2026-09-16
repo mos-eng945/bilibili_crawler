@@ -148,6 +148,12 @@ def sign_wbi_params(params, mixin_key):
     return f"{query}&w_rid={w_rid}"
 
 
+def request_wbi_json(path, params, cookie, mixin_key):
+    """请求需要 WBI 签名的 JSON 接口。"""
+    query = sign_wbi_params(params, mixin_key)
+    return request_json(f"{API_BASE}{path}?{query}", cookie)
+
+
 def get_video_info(bvid, cookie):
     """取得视频的详细信息。"""
     query = urllib.parse.urlencode({"bvid": bvid})
@@ -220,8 +226,12 @@ def get_player_subtitles(bvid, cid, cookie, mixin_key):
         if _has_chinese_subtitle(tracks):
             break
 
-    signed_query = sign_wbi_params(params, mixin_key)
-    data = request_json(f"{API_BASE}/x/player/wbi/v2?{signed_query}", cookie)
+    data = request_wbi_json(
+        "/x/player/wbi/v2",
+        params,
+        cookie,
+        mixin_key,
+    )
     tracks = _extract_subtitle_tracks(data)
     _merge_subtitle_tracks(collected, tracks)
 

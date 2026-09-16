@@ -1,7 +1,7 @@
-# Bilibili 视频信息、字幕与弹幕采集器
+# Bilibili 视频信息、评论、字幕与弹幕采集器
 
 这是一个基于 Python 和 Playwright 的 Bilibili 数据采集工具，用于保存
-视频公开信息、下载字幕，并通过浏览器播放器采集弹幕。
+视频公开信息、一级评论和字幕，并通过浏览器播放器采集弹幕。
 
 > 本项目调用的是 Bilibili Web 端接口，并非官方开放平台 API。
 > 接口、字段和访问限制可能随网站更新而变化。
@@ -10,6 +10,8 @@
 
 - 保存视频标题、互动数据、发布时间、简介和 UP 主信息。
 - 获取 UP 主粉丝数。
+- 按时间顺序并发采集视频的全部一级评论。
+- 按 `rpid` 去重评论，并保存评论图片 URL。
 - 下载视频中的普通字幕和 AI 字幕。
 - 将字幕同时保存为 JSON 和 SRT 格式。
 - 通过 Playwright 监听播放器请求并采集弹幕。
@@ -21,10 +23,11 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `main.py` | 主入口，依次采集视频信息、字幕和弹幕 |
+| `main.py` | 主入口，依次采集视频信息、评论、字幕和弹幕 |
 | `login.py` | 保存、检查和刷新 Bilibili 登录状态 |
 | `bilibili_api.py` | 公共接口请求、WBI 签名和字幕接口 |
 | `crawler_info.py` | 获取并保存视频信息和 UP 主粉丝数 |
+| `crawler_comment.py` | 分页采集全部一级评论并保存 CSV |
 | `crawler_subtitle.py` | 下载字幕 JSON 并转换 SRT |
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
 | `video_paths.py` | 生成统一的视频输出目录 |
@@ -72,6 +75,18 @@ python main.py BV1V3Yn6wENr
 python main.py
 ```
 
+只采集一级评论：
+
+```powershell
+python crawler_comment.py BV1V3Yn6wENr
+```
+
+默认使用 6 个并发请求，可以手动调整：
+
+```powershell
+python crawler_comment.py BV1V3Yn6wENr --workers 8
+```
+
 首次运行或登录状态失效时，程序会打开 Chrome，要求手动登录。
 登录完成后，Cookie 和 localStorage 会保存到 `bilibili_state.json`。
 
@@ -79,11 +94,13 @@ python main.py
 
 1. 检查或刷新登录状态。
 2. 保存视频信息和 UP 主粉丝数。
-3. 下载该视频所有分 P 的字幕。
-4. 打开播放器并采集所有分 P 的弹幕。
+3. 按时间顺序下载该视频的全部一级评论。
+4. 下载该视频所有分 P 的字幕。
+5. 打开播放器并采集所有分 P 的弹幕。
 
-字幕和弹幕可能受以下条件影响：
+评论、字幕和弹幕可能受以下条件影响：
 
+- 评论数量较多时需要多次分页请求，采集时间会相应增加。
 - 视频没有字幕时不会生成字幕文件。
 - 部分高清晰度或字幕接口需要有效登录状态。
 - 弹幕采集依赖播放器实际发出的请求，可能受网络和播放器策略影响。
@@ -110,6 +127,7 @@ output/漪棘_冰主初显威！0金7人连打满星9月深渊_BV1vJeW6jEEu/
 output/
 └── UP主_视频标题_BV号/
     ├── video_info.json
+    ├── comments_BV号.csv
     ├── subtitle_BV号_p1_ai-zh.json
     ├── subtitle_BV号_p1_ai-zh.srt
     └── danmaku_BV号.csv
@@ -144,6 +162,41 @@ danmaku_{BV号}_p2.csv
 ```
 
 统计数字是采集时的快照，之后不会自动更新。
+
+## 评论文件
+
+评论保存为：
+
+```text
+comments_{BV号}.csv
+```
+
+当前只采集直接评论视频的一级评论，不展开一级评论下面的子评论。
+采集使用时间排序，并发请求连续页码，并按照 `rpid` 去重。
+
+CSV 列如下：
+
+| 列名 | 含义 |
+| --- | --- |
+| `rpid` | 评论ID |
+| `mid` | 评论者用户ID |
+| `user_name` | 评论者昵称 |
+| `user_level` | 评论者B站等级 |
+| `message` | 评论正文，换行保存为字面量 `\n` |
+| `ctime` | 评论发布时间，秒级时间戳 |
+| `like` | 评论点赞数 |
+| `reply_count` | 子评论数量 |
+| `state` | 评论状态，`0` 表示正常 |
+| `image_urls` | 评论图片URL，多个地址用 `|` 分隔 |
+
+图片只保存 URL，不下载图片文件。例如：
+
+```text
+https://i0.hdslb.com/bfs/new_dyn/a.jpg|https://i0.hdslb.com/bfs/new_dyn/b.jpg
+```
+
+评论正文中的连续空格会压缩为一个空格，连续换行会转换为一个可见的
+`\n` 字符。没有图片时 `image_urls` 列为空。
 
 ## 字幕文件
 
@@ -216,6 +269,8 @@ bilibili_state.json
 
 - Bilibili Web 接口不是稳定的公共 API，字段和限制可能随时变化。
 - 充电专属、付费、地区限制或仅自己可见的视频可能无法访问。
+- 评论采集当前只包含一级评论，不包含完整子评论。
+- 评论图片只保存 URL，如果 CDN 地址失效，历史图片可能无法重新访问。
 - 弹幕采用分段跳转采集，可能存在延迟、重复或遗漏；代码会按弹幕 ID、
   时间点和内容去重。
 - 视频信息是采集时快照，不包含持续监控功能。
