@@ -12,7 +12,6 @@ from login import get_cookie_header
 
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
-SUBTITLE_ATTEMPTS = 5
 
 # Bilibili WBI 签名使用的字符重排表
 MIXIN_KEY_ENC_TAB = [
@@ -169,58 +168,13 @@ def _extract_subtitle_tracks(data):
     return subtitle.get("subtitles") or subtitle.get("list") or []
 
 
-def _merge_subtitle_tracks(collected, tracks):
-    """按字幕 ID 合并不同接口返回的轨道。"""
-    for item in tracks:
-        key = item.get("id") or item.get("id_str") or item.get("lan")
-
-        if key is None:
-            continue
-
-        existing = collected.get(key)
-
-        if existing is None:
-            collected[key] = item
-        elif not existing.get("subtitle_url") and item.get("subtitle_url"):
-            collected[key] = item
-
-
-def _has_chinese_subtitle(tracks):
-    """判断字幕列表中是否包含中文轨道。"""
-    for item in tracks:
-        lan = str(item.get("lan") or "").lower()
-        lan_doc = str(item.get("lan_doc") or "")
-
-        if lan.startswith("zh") or lan == "ai-zh" or "中文" in lan_doc:
-            return True
-
-    return False
-
-
 def get_player_subtitles(bvid, cid, cookie, mixin_key):
     """取得指定分 P 的字幕列表。"""
-    params = {"bvid": bvid, "cid": cid}
-    collected = {}
-
-    # AI 原声翻译视频中，WBI 接口可能只返回翻译后的语言。
-    # 普通播放器接口有时会返回原始中文字幕，因此重试并合并。
-    query = urllib.parse.urlencode(params)
-
-    for _ in range(SUBTITLE_ATTEMPTS):
-        data = request_json(f"{API_BASE}/x/player/v2?{query}", cookie)
-        tracks = _extract_subtitle_tracks(data)
-        _merge_subtitle_tracks(collected, tracks)
-
-        if _has_chinese_subtitle(tracks):
-            break
-
     data = request_wbi_json(
         "/x/player/wbi/v2",
-        params,
+        {"bvid": bvid, "cid": cid},
         cookie,
         mixin_key,
     )
-    tracks = _extract_subtitle_tracks(data)
-    _merge_subtitle_tracks(collected, tracks)
 
-    return list(collected.values())
+    return _extract_subtitle_tracks(data)

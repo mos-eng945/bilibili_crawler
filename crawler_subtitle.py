@@ -8,6 +8,7 @@ Bilibili 字幕下载器。
 4. 下载字幕 JSON，同时转换成 SRT 文本并保存到视频目录。
 """
 
+import argparse
 import json
 import urllib.request
 
@@ -112,11 +113,12 @@ def save_subtitle(
     return json_path, srt_path
 
 
-def crawl_subtitles(bvid=DEFAULT_BVID):
+def crawl_subtitles(
+    bvid=DEFAULT_BVID,
+    page_number=None,
+    language=None,
+):
     """下载视频全部或指定分 P 的字幕。"""
-    page_number = None
-    language = None
-
     cookie = get_cookie_header()
     mixin_key = get_wbi_mixin_key(cookie)
     video_info = get_video_info(bvid, cookie)
@@ -182,9 +184,32 @@ def crawl_subtitles(bvid=DEFAULT_BVID):
 
 
 def main():
-    # 开始爬取前，确保浏览器登录状态可用
+    parser = argparse.ArgumentParser(description="下载 Bilibili 字幕")
+    parser.add_argument(
+        "bvid",
+        nargs="?",
+        default=DEFAULT_BVID,
+        help="视频 BV 号，不填写时使用 DEFAULT_BVID",
+    )
+    parser.add_argument(
+        "--page",
+        type=int,
+        default=None,
+        help="只采集指定分 P",
+    )
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="只采集指定语言，例如 zh-CN 或 ai-zh",
+    )
+    args = parser.parse_args()
+
     ensure_login()
-    crawl_subtitles()
+    crawl_subtitles(
+        args.bvid,
+        page_number=args.page,
+        language=args.language,
+    )
 
 
 if __name__ == "__main__":

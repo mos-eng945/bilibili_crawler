@@ -15,7 +15,7 @@ import argparse
 from login import ensure_login
 
 # 所有爬虫默认使用的视频，只需要在这里修改
-DEFAULT_BVID = "BV1V3Yn6wENr"
+DEFAULT_BVID = "BV1UT42167xb"
 
 
 def main():
@@ -31,16 +31,82 @@ def main():
         default=DEFAULT_BVID,
         help="视频 BV 号，不填写时使用 DEFAULT_BVID",
     )
+    parser.add_argument(
+        "--info",
+        action="store_true",
+        help="只采集视频信息",
+    )
+    parser.add_argument(
+        "--comments",
+        action="store_true",
+        help="只采集一级评论",
+    )
+    parser.add_argument(
+        "--subtitles",
+        action="store_true",
+        help="只采集字幕",
+    )
+    parser.add_argument(
+        "--danmaku",
+        action="store_true",
+        help="只采集弹幕",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="依次执行全部功能",
+    )
+    parser.add_argument(
+        "--subtitle-page",
+        type=int,
+        default=None,
+        help="只采集指定字幕分 P",
+    )
+    parser.add_argument(
+        "--subtitle-language",
+        default=None,
+        help="只采集指定语言，例如 zh-CN 或 ai-zh",
+    )
+    parser.add_argument(
+        "--danmaku-page",
+        type=int,
+        default=None,
+        help="只采集指定弹幕分 P",
+    )
     args = parser.parse_args()
+
+    selected = {
+        "info": args.info,
+        "comments": args.comments,
+        "subtitles": args.subtitles,
+        "danmaku": args.danmaku,
+    }
+
+    if args.all:
+        selected = {name: True for name in selected}
+
+    if not any(selected.values()):
+        parser.error("请至少选择一个功能：--info、--comments、--subtitles、--danmaku 或 --all")
 
     print("视频：", args.bvid)
 
-    # 先确保登录态可用，再依次下载视频信息、评论、字幕和弹幕
     ensure_login()
-    crawl_video_info(args.bvid)
-    crawl_comments(args.bvid)
-    crawl_subtitles(args.bvid)
-    goto(args.bvid)
+
+    if selected["info"]:
+        crawl_video_info(args.bvid)
+
+    if selected["comments"]:
+        crawl_comments(args.bvid)
+
+    if selected["subtitles"]:
+        crawl_subtitles(
+            args.bvid,
+            page_number=args.subtitle_page,
+            language=args.subtitle_language,
+        )
+
+    if selected["danmaku"]:
+        goto(args.bvid, page_number=args.danmaku_page)
 
 
 if __name__ == "__main__":

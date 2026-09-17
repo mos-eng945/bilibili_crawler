@@ -63,16 +63,54 @@ grpcio-tools
 
 ## 运行
 
-使用指定 BV 号运行完整流程：
+主入口不再默认运行全部功能，必须至少选择一个功能。
+
+只采集视频信息：
 
 ```powershell
-python main.py BV1V3Yn6wENr
+python main.py BV1V3Yn6wENr --info
+```
+
+只采集一级评论：
+
+```powershell
+python main.py BV1V3Yn6wENr --comments
+```
+
+只采集字幕：
+
+```powershell
+python main.py BV1V3Yn6wENr --subtitles
+```
+
+只采集字幕的指定分 P 和语言：
+
+```powershell
+python main.py BV1V3Yn6wENr --subtitles --subtitle-page 1 --subtitle-language ai-zh
+```
+
+只采集弹幕：
+
+```powershell
+python main.py BV1V3Yn6wENr --danmaku
+```
+
+只采集指定分 P 的弹幕：
+
+```powershell
+python main.py BV1V3Yn6wENr --danmaku --danmaku-page 1
+```
+
+依次运行全部功能：
+
+```powershell
+python main.py BV1V3Yn6wENr --all
 ```
 
 不填写 BV 号时，使用 `main.py` 中的 `DEFAULT_BVID`：
 
 ```powershell
-python main.py
+python main.py --info
 ```
 
 只采集一级评论：
@@ -81,16 +119,13 @@ python main.py
 python crawler_comment.py BV1V3Yn6wENr
 ```
 
-默认使用 6 个并发请求，可以手动调整：
-
-```powershell
-python crawler_comment.py BV1V3Yn6wENr --workers 8
-```
+评论使用 WBI 游标分页顺序采集，不受旧评论接口的
+`max offset exceeded` 页码上限影响。
 
 首次运行或登录状态失效时，程序会打开 Chrome，要求手动登录。
 登录完成后，Cookie 和 localStorage 会保存到 `bilibili_state.json`。
 
-完整流程会依次执行：
+`--all` 会依次执行：
 
 1. 检查或刷新登录状态。
 2. 保存视频信息和 UP 主粉丝数。
@@ -166,7 +201,9 @@ comments_{BV号}.csv
 ```
 
 当前只采集直接评论视频的一级评论，不展开一级评论下面的子评论。
-采集使用时间排序，并发请求连续页码，并按照 `rpid` 去重。
+采集使用时间排序，通过 WBI 游标分页依次推进，并按照 `rpid` 去重。
+接口返回的 `all_count` 是视频总评论数，包含一级评论下面的子评论；CSV
+实际保存的行数是一级评论数。
 
 CSV 列如下：
 
