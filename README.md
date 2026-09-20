@@ -23,14 +23,14 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `main.py` | 主入口，依次采集视频信息、评论、字幕和弹幕 |
+| `main.py` | `bilibili` 命令行入口和功能分发 |
 | `login.py` | 保存、检查和刷新 Bilibili 登录状态 |
-| `bilibili_api.py` | 公共接口请求、WBI 签名和字幕接口 |
+| `bilibili_api.py` | 公共接口请求、WBI 签名、输出路径和字幕接口 |
 | `crawler_info.py` | 获取并保存视频信息和 UP 主粉丝数 |
 | `crawler_comment.py` | 分页采集全部一级评论并保存 CSV |
 | `crawler_subtitle.py` | 下载字幕 JSON 并转换 SRT |
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
-| `video_paths.py` | 生成统一的视频输出目录 |
+| `crawler_search.py` | 按关键词搜索视频并保存 CSV |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
 
@@ -49,6 +49,7 @@
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -e .
 ```
 
 `requirements.txt` 包含：
@@ -63,60 +64,85 @@ grpcio-tools
 
 ## 运行
 
-主入口不再默认运行全部功能，必须至少选择一个功能。
+安装后所有命令都以 `bilibili` 开头，必须选择一项操作。
+旧版 `python main.py` 和 `--search-page`、`--subtitle-page` 等参数不再兼容。
+
+确认登录状态：
+
+```powershell
+bilibili -l
+```
 
 只采集视频信息：
 
 ```powershell
-python main.py BV1V3Yn6wENr --info
+bilibili -i BV1V3Yn6wENr
 ```
 
 只采集一级评论：
 
 ```powershell
-python main.py BV1V3Yn6wENr --comments
+bilibili -c BV1V3Yn6wENr
 ```
 
 只采集字幕：
 
 ```powershell
-python main.py BV1V3Yn6wENr --subtitles
+bilibili -s BV1V3Yn6wENr
 ```
 
-只采集字幕的指定分 P 和语言：
+只采集字幕的指定分 P 范围和语言：
 
 ```powershell
-python main.py BV1V3Yn6wENr --subtitles --subtitle-page 1 --subtitle-language ai-zh
+bilibili -s BV1V3Yn6wENr -p 1,3 --language ai-zh
 ```
 
 只采集弹幕：
 
 ```powershell
-python main.py BV1V3Yn6wENr --danmaku
+bilibili -d BV1V3Yn6wENr
 ```
 
-只采集指定分 P 的弹幕：
+只采集指定分 P 范围的弹幕：
 
 ```powershell
-python main.py BV1V3Yn6wENr --danmaku --danmaku-page 1
+bilibili -d BV1V3Yn6wENr -p 1,3
+```
+
+按关键词搜索视频：
+
+```powershell
+bilibili -k "Python 教程"
+```
+
+指定搜索页码范围、每页数量和并发线程数：
+
+```powershell
+bilibili -k "Python 教程" -p 2,4 --page-size 50 -w 3
+```
+
+对 Bilibili 热搜词逐个执行搜索：
+
+```powershell
+bilibili -H
+```
+
+指定热搜数量：
+
+```powershell
+bilibili -H --limit 20
 ```
 
 依次运行全部功能：
 
 ```powershell
-python main.py BV1V3Yn6wENr --all
+bilibili -a BV1V3Yn6wENr
 ```
 
 不填写 BV 号时，使用 `main.py` 中的 `DEFAULT_BVID`：
 
 ```powershell
-python main.py --info
-```
-
-只采集一级评论：
-
-```powershell
-python crawler_comment.py BV1V3Yn6wENr
+bilibili -i
 ```
 
 评论使用 WBI 游标分页顺序采集，不受旧评论接口的
@@ -125,7 +151,7 @@ python crawler_comment.py BV1V3Yn6wENr
 首次运行或登录状态失效时，程序会打开 Chrome，要求手动登录。
 登录完成后，Cookie 和 localStorage 会保存到 `bilibili_state.json`。
 
-`--all` 会依次执行：
+`-a` 会依次执行：
 
 1. 检查或刷新登录状态。
 2. 保存视频信息和 UP 主粉丝数。
@@ -169,6 +195,26 @@ danmaku_{BV号}_p1.csv
 danmaku_{BV号}_p2.csv
 ```
 
+搜索结果保存在：
+
+```text
+output/search/{关键词}/search_{时间}_{数据量}.csv
+```
+
+热搜搜索会按运行时间创建目录，并把每个热搜词的结果保存到对应子目录：
+
+```text
+output/search/hot-search/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
+output/search/hot-search/{运行时间}/hot_list.csv
+```
+
+搜索 CSV 包含 `bvid`、标题、发布时间、作者、作者 mid、点赞数、评论数、
+收藏数、分享数、作者粉丝数、播放数和弹幕数。发布时间来自搜索结果的
+`pubdate`，视频详情可用时优先使用详情值。热搜关键词的热度保存在
+`hot_list.csv`。搜索接口缺少的分享数和作者粉丝数会通过视频详情和作者
+接口补充；作者粉丝数按作者 mid 缓存，同一作者只请求一次。搜索页、视频
+详情和作者粉丝数分别使用线程池并发请求，结果仍按搜索顺序保存。
+
 ## 视频信息
 
 `video_info.json` 包含以下字段：
@@ -204,6 +250,17 @@ comments_{BV号}.csv
 采集使用时间排序，通过 WBI 游标分页依次推进，并按照 `rpid` 去重。
 接口返回的 `all_count` 是视频总评论数，包含一级评论下面的子评论；CSV
 实际保存的行数是一级评论数。
+
+重复运行同一个视频时，程序会先读取已有 CSV。如果第一页已经没有新评论，
+就停止采集；如果出现新评论，则继续翻页直到重新到达旧数据边界。采集过程
+会逐页写入 CSV，并生成临时文件：
+
+```text
+comments_{BV号}.checkpoint.json
+```
+
+如果任务中途失败，下次运行会从该断点继续；完成后断点文件会自动删除。
+需要重新完整采集时，删除对应的评论 CSV 和断点文件即可。
 
 CSV 列如下：
 

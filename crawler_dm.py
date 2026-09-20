@@ -14,10 +14,9 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 
 import dm_pb2
-from bilibili_api import get_cookie_header, get_video_info
+from bilibili_api import get_cookie_header, get_video_dir, get_video_info
 from login import STATE_FILE, ensure_login
 from main import DEFAULT_BVID
-from video_paths import get_video_dir
 
 # 弹幕接口通常一次覆盖约 120 秒
 SEEK_STEP_SECONDS = 120
@@ -61,7 +60,7 @@ def crawl_page(page, bvid, page_info, total_pages, video_dir, use_page_suffix):
         if oid != expected_oid:
             return
 
-        reply = dm_pb2.DmSegMobileReply()
+        reply = dm_pb2.DmSegMobileReply()  # pyright: ignore[reportAttributeAccessIssue]
         reply.ParseFromString(response.body())
 
         rows = []
@@ -147,8 +146,8 @@ def crawl_page(page, bvid, page_info, total_pages, video_dir, use_page_suffix):
         page.remove_listener("response", handle_response)
 
 
-def goto(bvid, page_number=None):
-    """采集视频全部或指定分 P 的弹幕。"""
+def goto(bvid, page_range=None):
+    """采集视频全部或指定分 P 范围的弹幕。"""
     cookie = get_cookie_header()
     video_info = get_video_info(bvid, cookie)
     pages = video_info.get("pages", [])
@@ -159,11 +158,18 @@ def goto(bvid, page_number=None):
 
     video_page_count = len(pages)
 
-    if page_number is not None:
-        pages = [item for item in pages if item.get("page") == page_number]
+    if page_range is not None:
+        page_start, page_end = page_range
+        pages = [
+            item
+            for item in pages
+            if page_start <= item.get("page", 0) <= page_end
+        ]
 
         if not pages:
-            raise RuntimeError(f"视频 {bvid} 没有第 {page_number} 个分 P")
+            raise RuntimeError(
+                f"视频 {bvid} 没有分 P {page_start}-{page_end}"
+            )
 
     # =========================
     # 1. 启动浏览器
@@ -193,7 +199,7 @@ def goto(bvid, page_number=None):
         browser.close()
 
 
-# 单独运行本文件也能用：python crawler.py
+# 统一命令行入口：bilibili -d
 if __name__ == "__main__":
     ensure_login()
     goto(DEFAULT_BVID)

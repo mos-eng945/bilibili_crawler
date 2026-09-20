@@ -1,72 +1,272 @@
 # Bilibili 采集项目说明
 
-本项目通过 Bilibili Web 接口和 Playwright 浏览器自动化，采集视频公开信息、
-一级评论、软字幕和弹幕。它不是 Bilibili 官方开放平台 API，接口字段和访问
-策略可能随网站更新而变化。
+本项目使用 Python、Bilibili Web 接口和 Playwright，采集视频公开信息、一级
+评论、软字幕、弹幕和搜索结果，并把数据保存为 JSON 或 CSV。
 
-## 整体流程
+本项目调用的是 Bilibili Web 端接口，不是官方开放平台 API。接口地址、字段、
+访问限制和风控策略都可能随网站更新而变化。
 
-`main.py` 是统一入口。功能通过命令行开关选择，不再默认全部执行：
+`bilibili_state.json` 包含登录 Cookie，属于敏感文件，不应提交到 Git 仓库、
+上传或分享给他人。
 
-1. 调用 `ensure_login()` 检查登录状态。
-2. 根据功能开关调用对应采集器。
+## 目录
 
-| 功能开关 | 调用的函数 | 额外参数 |
+- [项目定位](#项目定位)
+- [功能范围](#功能范围)
+- [接口总览](#接口总览)
+- [环境与安装](#环境与安装)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [执行流程](#执行流程)
+- [登录状态](#登录状态)
+- [公共接口层](#公共接口层)
+- [视频信息](#视频信息)
+- [评论采集](#评论采集)
+- [视频搜索](#视频搜索)
+- [字幕采集](#字幕采集)
+- [弹幕采集](#弹幕采集)
+- [输出文件](#输出文件)
+- [错误处理与重试](#错误处理与重试)
+- [已知限制](#已知限制)
+- [合规说明](#合规说明)
+
+## 项目定位
+
+项目适合以下场景：
+
+- 学习和调试验证 Bilibili Web 接口、WBI 签名、Cookie 和 Playwright。
+- 保存指定视频的公开信息、一级评论、软字幕和弹幕。
+- 按关键词或热搜词搜索视频，并整理互动数据。
+- 为内容分析、选题研究或个人数据存档提供基础数据。
+
+项目不负责以下内容：
+
+- 不下载视频或音频文件。
+- 不采集付费、充电专属、地区限制或无权访问的内容。
+- 不提供持续监控或定时任务；重复运行时评论采集会自动增量更新。
+- 不保证采集结果完整，所有数据都是请求时的快照。
+
+## 功能范围
+
+| 功能 | 数据来源 | 主要输出 |
 | --- | --- | --- |
-| `--info` | `crawl_video_info()` | 无 |
-| `--comments` | `crawl_comments()` | 无 |
-| `--subtitles` | `crawl_subtitles()` | `--subtitle-page`、`--subtitle-language` |
-| `--danmaku` | `goto()` | `--danmaku-page` |
-| `--all` | 依次调用全部功能 | 可使用各功能自己的额外参数 |
+| 视频信息 | [`/x/web-interface/view`](https://api.bilibili.com/x/web-interface/view?bvid=BV1GJ411x7h7) | `video_info.json` |
+| 一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `comments_{BV号}.csv` |
+| 视频搜索 | [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=被骗的小曲&page=1&page_size=20) | `search_{时间}_{数据量}.csv` |
+| 热搜搜索 | [`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10) | `hot_list.csv` 和搜索 CSV |
+| 软字幕 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | JSON、SRT |
+| 弹幕 | [播放器 `/seg.so` 请求](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `danmaku_{BV号}*.csv` |
 
-运行方式：
+## 接口总览
 
-```powershell
-python main.py BV号 --info
-python main.py BV号 --comments
-python main.py BV号 --subtitles
-python main.py BV号 --danmaku
-python main.py BV号 --all
+以下列出项目当前实际使用的接口。示例统一使用：
+
+```text
+bvid = BV1GJ411x7h7
+aid  = 80433022
+cid  = 137649199
+mid  = 486906719
 ```
 
-不传 BV 号时使用 `main.py` 中的 `DEFAULT_BVID`。不选择任何功能时，
-程序会提示必须先选择 `--info`、`--comments`、`--subtitles`、
-`--danmaku` 或 `--all`。
+### 固定 API
 
-## 命令行参数
+所有接口都基于：
 
-| 入口 | 参数 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `main.py` | `bvid` | 否 | 位置参数；省略时使用 `DEFAULT_BVID` |
-| `main.py` | `--info` | 否 | 只采集视频信息 |
-| `main.py` | `--comments` | 否 | 只采集一级评论 |
-| `main.py` | `--subtitles` | 否 | 只采集字幕 |
-| `main.py` | `--subtitle-page` | 否 | 只采集指定字幕分 P |
-| `main.py` | `--subtitle-language` | 否 | 只采集指定字幕语言 |
-| `main.py` | `--danmaku` | 否 | 只采集弹幕 |
-| `main.py` | `--danmaku-page` | 否 | 只采集指定弹幕分 P |
-| `main.py` | `--all` | 否 | 依次执行全部功能 |
-| `crawler_info.py` | 无 | - | 只使用代码中的 `DEFAULT_BVID` |
-| `crawler_comment.py` | `bvid` | 否 | 位置参数；省略时使用 `DEFAULT_BVID` |
-| `crawler_comment.py` | `--workers` | 否 | 兼容旧参数；WBI 游标分页要求顺序请求，当前不生效 |
-| `crawler_subtitle.py` | `bvid` | 否 | 位置参数；省略时使用 `DEFAULT_BVID` |
-| `crawler_subtitle.py` | `--page` | 否 | 只采集指定分 P |
-| `crawler_subtitle.py` | `--language` | 否 | 只采集指定语言 |
-| `crawler_dm.py` | 无 | - | 只使用代码中的 `DEFAULT_BVID` |
-| `login.py` | 无 | - | 检查登录状态，必要时打开浏览器登录 |
+```text
+https://api.bilibili.com
+```
 
-各模块入口函数：
+| 用途 | 接口 | 关键参数 | WBI | 调用位置 |
+| --- | --- | --- | --- | --- |
+| 获取登录状态和 WBI 密钥 | [`/x/web-interface/nav`](https://api.bilibili.com/x/web-interface/nav) | 无 | 否 | `get_wbi_mixin_key()`、`check_login_online()` |
+| 获取视频详情和分 P | [`/x/web-interface/view`](https://api.bilibili.com/x/web-interface/view?bvid=BV1GJ411x7h7) | `bvid` | 否 | `get_video_info()`、`get_video_pages()` |
+| 获取 UP 主粉丝数 | [`/x/relation/stat`](https://api.bilibili.com/x/relation/stat?vmid=486906719) | `vmid` | 否 | `get_up_follower_count()` |
+| 获取热搜列表 | [`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10) | `limit` | 否 | `get_hot_search()` |
+| 搜索视频 | [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=被骗的小曲&page=1&page_size=20) | `search_type`、`keyword`、`page`、`page_size` | 是 | `search_videos()` |
+| 获取分 P 字幕轨道 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | `bvid`、`cid` | 是 | `get_player_subtitles()` |
+| 获取一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `oid`、`type`、`mode`、`next`、`pagination_str`、`ps` | 是 | `request_comment_page()` |
+| 获取弹幕分段 | [`/x/v2/dm/web/seg.so`](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `oid`、`type`、`segment_index` | 否 | `crawler_dm.py` 监听播放器响应 |
 
-| 函数 | 参数 | 返回 | 说明 |
-| --- | --- | --- | --- |
-| `main()`（`main.py`） | 无 | `None` | 解析命令行参数并执行选中的功能 |
-| `main()`（`crawler_info.py`） | 无 | `None` | 检查登录后采集默认视频信息 |
-| `main()`（`crawler_comment.py`） | 无 | `None` | 解析命令行参数并采集评论 |
-| `main()`（`crawler_subtitle.py`） | 无 | `None` | 检查登录后采集默认视频字幕 |
+需要 WBI 的接口会在运行时加入：
 
-## login.py
+```text
+wts=当前 Unix 时间戳
+w_rid=基于排序参数和 mixin_key 计算的 MD5
+```
 
-负责保存、检查和复用 Bilibili 登录状态。
+因此表中的 WBI 接口链接用于查看接口地址和参数结构，直接点击通常会返回缺少
+签名或参数的错误。程序会在调用时动态生成完整查询字符串。
+
+### 页面入口
+
+| 用途 | 页面 | 调用位置 |
+| --- | --- | --- |
+| 人工登录 | [`https://www.bilibili.com/`](https://www.bilibili.com/) | `login.py` |
+| 打开视频并触发弹幕请求 | [`https://www.bilibili.com/video/BV1GJ411x7h7?p=1`](https://www.bilibili.com/video/BV1GJ411x7h7?p=1) | `crawler_dm.py` |
+
+### 动态字幕地址
+
+`/x/player/wbi/v2` 返回的每个字幕轨道包含 `subtitle_url`。项目会直接请求该
+地址下载字幕 JSON。它通常位于 `aisubtitle.hdslb.com`，并带有会过期的
+`auth_key`，因此不能写成一个长期有效的固定接口。
+
+例如，`BV1GJ411x7h7` 的简体中文字幕轨道曾返回：
+
+```text
+//aisubtitle.hdslb.com/bfs/subtitle/662b660a420431045b483f9b560057c262539b87.json?auth_key=...
+```
+
+`auth_key` 过期后该地址会失效，必须重新调用 `/x/player/wbi/v2` 获取。
+
+### 文档中用于对照但未使用的接口
+
+[`/x/v2/subtitle/web/view`](https://api.bilibili.com/x/v2/subtitle/web/view?oid=137649199&pid=80433022)
+和 [`/x/player/v2`](https://api.bilibili.com/x/player/v2?bvid=BV1GJ411x7h7&cid=137649199)
+只用于说明字幕接口差异，当前代码不会调用。
+
+## 环境与安装
+
+### 环境要求
+
+- Python 3.9 或更高版本。
+- Google Chrome，供 Playwright 弹幕采集和人工登录使用。
+- 可访问 Bilibili 的网络环境。
+- 一个可正常登录的 Bilibili 账号。
+
+`zoneinfo` 用于把秒级时间戳转换成 `Asia/Shanghai` 时区时间，因此最低版本
+要求 Python 3.9。
+
+### 安装依赖
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+```
+
+`requirements.txt` 包含：
+
+```text
+playwright
+protobuf>=6.31.1,<7
+grpcio-tools
+```
+
+`grpcio-tools` 只在重新编译 `dm.proto` 时需要使用。
+
+## 快速开始
+
+### 统一命令
+
+安装后所有命令都以 `bilibili` 开头。每次必须选择一个操作：
+
+| 短参数 | 长参数 | 作用 |
+| --- | --- | --- |
+| `-l` | `--login` | 确认登录状态，失效时重新登录 |
+| `-i` | `--info` | 采集视频信息和 UP 主粉丝数 |
+| `-c` | `--comments` | 采集一级评论 |
+| `-s` | `--subtitles` | 采集软字幕 |
+| `-d` | `--danmaku` | 采集弹幕 |
+| `-a` | `--all` | 依次采集信息、评论、字幕和弹幕 |
+| `-k` | `--keyword` | 按关键词搜索视频 |
+| `-H` | `--hot-search` | 遍历热搜词搜索视频 |
+
+通用参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-p` | 无 | 字幕、弹幕或关键词搜索页范围，不用于热搜 |
+| `--page-size` | `20` | 搜索结果每页数量，限制在 `1` 到 `50` |
+| `-w` | `3` | 搜索并发线程数，限制在 `1` 到 `5` |
+| `--limit` | `10` | 参与搜索的热搜词数量，最大 `50` |
+| `--language` | 无 | 字幕语言，例如 `zh-CN` 或 `ai-zh` |
+
+首次运行或登录失效时，任意需要登录的命令都会打开 Chrome，等待人工登录，
+并保存新的 `bilibili_state.json`。
+
+本文示例视频统一使用 `BV1GJ411x7h7`（Rick Astley 官方 MV）。该视频的
+`aid` 是 `80433022`，第一个分 P 的 `cid` 是 `137649199`，UP 主 `mid`
+是 `486906719`。
+
+常用命令：
+
+```powershell
+# 确认登录状态
+bilibili -l
+
+# 单独采集视频信息
+bilibili -i BV1GJ411x7h7
+
+# 单独采集一级评论
+bilibili -c BV1GJ411x7h7
+
+# 采集 P1-P3 的指定语言文字稿
+bilibili -s BV1GJ411x7h7 -p 1,3 --language ai-zh
+
+# 采集 P1-P3 的弹幕
+bilibili -d BV1GJ411x7h7 -p 1,3
+
+# 依次执行视频信息、评论、字幕和弹幕
+bilibili -a BV1GJ411x7h7
+
+# 搜索关键词
+bilibili -k "Python 教程"
+
+# 采集搜索结果的第 2-4 页
+bilibili -k "Python 教程" -p 2,4
+
+# 搜索热度最高的 20 个热搜词
+bilibili -H --limit 20
+```
+
+如果执行：
+
+```powershell
+bilibili -k "Python" -p 2,4
+```
+
+实际采集的是第 `2`、`3`、`4` 页，不会自动补第一页。
+
+## 项目结构
+
+| 文件 | 作用 |
+| --- | --- |
+| `main.py` | 命令行入口，负责参数校验和功能分发 |
+| `login.py` | 保存、检查和刷新登录状态 |
+| `bilibili_api.py` | HTTP 请求、WBI 签名、视频接口、搜索接口、输出路径 |
+| `crawler_info.py` | 保存视频信息和 UP 主粉丝数 |
+| `crawler_comment.py` | 使用 WBI 游标采集一级评论 |
+| `crawler_search.py` | 关键词搜索和热搜批量搜索 |
+| `crawler_subtitle.py` | 下载软字幕并转换 SRT |
+| `crawler_dm.py` | 使用 Playwright 采集弹幕 |
+| `dm.proto` | 弹幕 Protobuf 结构定义 |
+| `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
+| `requirements.txt` | Python 依赖 |
+| `pyproject.toml` | 安装 `bilibili` 命令入口 |
+| `bilibili_state.json` | Playwright 登录状态，属于敏感文件 |
+
+## 执行流程
+
+### 普通视频采集
+
+1. `main.py` 解析命令行参数。
+2. 调用 `ensure_login()` 检查或刷新登录状态。
+3. 根据 `-i`、`-c`、`-s`、`-d` 或 `-a` 执行选中功能。
+4. 各爬虫根据视频接口返回的 `owner`、`title` 和 `bvid` 生成同一个视频目录。
+5. 结果写入视频目录，已有文件会被同名新文件覆盖。
+
+`-a` 等价于同时选择视频信息、评论、字幕和弹幕，不包含搜索和热搜搜索。
+
+### 搜索采集
+
+关键词搜索和热搜搜索是独立分支：
+
+- 不能与 `-i`、`-c`、`-s`、`-d` 或 `-a` 同时使用。
+- `-k` 和 `-H` 也不能同时使用。
+- 搜索结果保存到 `output/search/`，不放入视频目录。
+
+## 登录状态
 
 登录状态默认保存在：
 
@@ -74,98 +274,42 @@ python main.py BV号 --all
 bilibili_state.json
 ```
 
-该文件包含 Cookie，属于敏感信息，不应提交到 Git 仓库或分享给他人。
+该文件保存 Playwright 的 Cookie 和 localStorage。它可以直接访问已登录账号，
+不应提交到公开仓库。
 
-### `load_state()`
+### 函数参考
 
-读取 `bilibili_state.json`。文件不存在、损坏或无法解析时返回 `None`。
+| 函数 | 作用 | 返回值 |
+| --- | --- | --- |
+| `load_state()` | 读取并解析登录状态文件 | `dict / None` |
+| `get_cookie_header(state=None)` | 把状态文件转换成 HTTP Cookie 请求头 | `str` |
+| `has_cookie()` | 检查本地是否存在未过期的 `SESSDATA` | `bool` |
+| `check_login_online()` | 请求 nav 接口验证服务端登录状态 | `bool` |
+| `login()` | 打开 Chrome，等待人工登录并保存状态 | `None` |
+| `ensure_login()` | 统一检查和刷新登录状态 | `None` |
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 固定读取 `STATE_FILE` |
+### 登录判断规则
 
-返回：`dict | None`，即 Playwright storage state 或空值。
+- `expires == -1` 的 Cookie 按会话 Cookie 处理。
+- `expires > 0` 时按 Unix 时间戳判断是否过期。
+- `check_login_online()` 读取响应中的 `data.isLogin`。
+- 网络异常导致无法验证时，当前实现会按已登录处理，后续接口请求再决定是否失败。
 
-### `get_cookie_header(state=None)`
+## 公共接口层
 
-把 Playwright storage state 中的 Cookie 列表转换成 HTTP 请求使用的
-Cookie 字符串。
+`bilibili_api.py` 提供通用请求、WBI 签名、视频信息、搜索、字幕接口和输出
+路径工具。
 
-不传 `state` 时自动读取 `bilibili_state.json`。
+### HTTP 请求
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `state` | `dict / None` | 否 | Playwright storage state；省略时读取本地文件 |
+`request_json(url, cookie)` 使用标准库 `urllib.request` 发起请求，并设置：
 
-返回：`str`，可直接放入 HTTP `Cookie` 请求头的字符串。
+- `Cookie`
+- `User-Agent`
+- `Referer: https://www.bilibili.com/`
+- 请求超时：20 秒
 
-### `has_cookie()`
-
-检查本地状态中是否存在未过期的 `SESSDATA`。
-
-`expires == -1` 表示会话 Cookie；大于零时按 Unix 时间戳判断是否过期。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 内部读取 `bilibili_state.json` |
-
-返回：`bool`，本地是否存在未过期的 `SESSDATA`。
-
-### `check_login_online()`
-
-请求：
-
-```text
-https://api.bilibili.com/x/web-interface/nav
-```
-
-通过响应中的 `data.isLogin` 判断服务端是否仍认可当前登录态。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 内部读取 Cookie 并请求 nav 接口 |
-
-返回：`bool`，登录有效时为 `True`。
-
-### `login()`
-
-打开 Chrome，等待人工登录。登录完成后调用：
-
-```python
-context.storage_state(path=STATE_FILE)
-```
-
-并保存新的登录状态。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 打开 Chrome 并等待用户手动登录 |
-
-返回：`None`。
-
-### `ensure_login()`
-
-统一登录入口：
-
-1. 本地没有 `SESSDATA` 时打开浏览器登录。
-2. 本地有 Cookie 但服务端已经失效时重新登录。
-3. 登录有效时直接跳过。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 根据本地和在线状态决定是否登录 |
-
-返回：`None`。
-
-## bilibili_api.py
-
-封装通用 HTTP 请求、WBI 签名、视频信息接口和字幕接口。
-
-### `request_json(url, cookie)`
-
-发起普通 JSON 请求，并检查 Bilibili 的业务错误码。
-
-正常响应结构：
+Bilibili JSON 接口通常返回：
 
 ```json
 {
@@ -176,104 +320,42 @@ context.storage_state(path=STATE_FILE)
 }
 ```
 
-- `code == 0`：业务成功。
-- `message`：接口消息。
-- `ttl`：接口缓存相关字段，不代表登录状态有效期。
-- `data`：实际业务数据。
+函数只返回 `data`：
 
-函数只返回 `data`，业务失败时抛出 `RuntimeError`。
+- `code == 0` 时返回业务数据。
+- HTTP 错误、JSON 解析失败或 `code != 0` 时抛出 `RuntimeError`。
+- `ttl` 是接口缓存相关字段，不代表登录状态有效期。
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `url` | `str` | 是 | 完整请求 URL |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
+### WBI 签名
 
-返回：`dict`，即接口响应中的 `data`。
+`get_wbi_mixin_key(cookie)` 请求
+[`/x/web-interface/nav`](https://api.bilibili.com/x/web-interface/nav)。
 
-### `MIXIN_KEY_ENC_TAB`
+从 `wbi_img.img_url` 和 `wbi_img.sub_url` 提取文件名，按
+`img_key + sub_key` 拼接，再按照 `MIXIN_KEY_ENC_TAB` 重排并截取前 32 位。
 
-WBI 签名使用的字符重排表。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| 无 | - | - | 模块级常量，不是函数参数 |
-
-值类型：`list[int]`，共 64 个索引。
-
-### `get_wbi_mixin_key(cookie)`
-
-请求 `x/web-interface/nav`，取得：
-
-```json
-{
-  "wbi_img": {
-    "img_url": "https://i0.hdslb.com/bfs/wbi/xxx.png",
-    "sub_url": "https://i0.hdslb.com/bfs/wbi/xxx.png"
-  }
-}
-```
-
-从两个 URL 中提取文件名，按 `img_key + sub_key` 拼接，再使用
-`MIXIN_KEY_ENC_TAB` 重排并截取前 32 位，得到 `mixin_key`。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `cookie` | `str` | 是 | 请求 nav 接口所需的登录 Cookie |
-
-返回：`str`，32 位 WBI `mixin_key`。
-
-### `sign_wbi_params(params, mixin_key)`
-
-为请求参数生成 WBI 签名：
+`sign_wbi_params(params, mixin_key)` 的流程：
 
 1. 加入当前 Unix 时间戳 `wts`。
-2. 按参数名排序并 URL 编码。
+2. 按参数名排序并进行 URL 编码。
 3. 把规范化查询字符串与 `mixin_key` 拼接。
 4. 计算 MD5，得到 `w_rid`。
 5. 返回带 `wts` 和 `w_rid` 的查询字符串。
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `params` | `dict` | 是 | 原始接口参数 |
-| `mixin_key` | `str` | 是 | `get_wbi_mixin_key()` 返回的密钥 |
+`request_wbi_json(path, params, cookie, mixin_key)` 先生成签名，再调用
+`request_json()`。
 
-返回：`str`，包含 `wts` 和 `w_rid` 的查询字符串。
+### 视频接口
 
-### `request_wbi_json(path, params, cookie, mixin_key)`
+| 函数 | 接口 | 返回 |
+| --- | --- | --- |
+| `get_video_info(bvid, cookie)` | [`/x/web-interface/view`](https://api.bilibili.com/x/web-interface/view?bvid=BV1GJ411x7h7) | 完整视频信息 |
+| `get_video_pages(bvid, cookie)` | [复用视频信息接口](https://api.bilibili.com/x/web-interface/view?bvid=BV1GJ411x7h7) | 分 P 列表 |
+| `get_up_follower_count(mid, cookie)` | [`/x/relation/stat`](https://api.bilibili.com/x/relation/stat?vmid=486906719) | UP 主粉丝数 |
 
-先生成 WBI 签名，再调用 `request_json()` 请求接口。
+`get_video_info()` 返回标题、简介、发布时间、UP 主、分 P 和统计信息等字段。
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `path` | `str` | 是 | API 路径，例如 `/x/player/wbi/v2` |
-| `params` | `dict` | 是 | 接口查询参数 |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-| `mixin_key` | `str` | 是 | WBI 签名密钥 |
-
-返回：`dict`，即接口响应中的 `data`。
-
-### `get_video_info(bvid, cookie)`
-
-请求：
-
-```text
-/x/web-interface/view?bvid=BV号
-```
-
-返回视频标题、分 P、统计数据、UP 主信息和简介等数据。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-
-返回：`dict`，完整视频信息。
-
-### `get_video_pages(bvid, cookie)`
-
-复用 `get_video_info()`，只返回 `pages` 数组。
-
-每个分 P 通常包含：
+`get_video_pages()` 返回的每个分 P 通常包含：
 
 ```json
 {
@@ -289,113 +371,335 @@ WBI 签名使用的字符重排表。
 }
 ```
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
+### 搜索接口
 
-返回：`list[dict]`，每个元素代表一个分 P。
+普通关键词搜索使用
+[`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=Python&page=1&page_size=20)。
+该接口需要动态 WBI 参数，直接点击示例链接通常只会看到缺少签名的错误。
 
-### `get_up_follower_count(mid, cookie)`
+`search_videos(keyword, cookie, mixin_key, page=1, page_size=20)` 使用关键参数：
 
-请求：
+| 参数 | 说明 |
+| --- | --- |
+| `search_type=video` | 只搜索视频 |
+| `keyword` | 搜索关键词 |
+| `page` | 页码，最小为 `1` |
+| `page_size` | 每页数量，限制在 `1` 到 `50` |
+
+返回数据的 `result` 是视频列表，`numResults` 是接口报告的结果数量。
+
+热搜列表使用
+[`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10)。
+
+`get_hot_search(cookie, limit=10)` 从 `trending.list` 读取热搜词。
+
+直接在浏览器打开搜索页面时，第一页数据可能随 HTML 一起返回，因此 Network
+中不一定出现 `search/type`。点击分页、排序或筛选后更容易观察到该请求。
+项目不依赖浏览器抓包，而是直接调用接口，所以第一页同样可以正常采集。
+
+### 字幕接口
+
+`get_player_subtitles(bvid, cid, cookie, mixin_key)` 请求
+[`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199)。
+该接口需要动态 WBI 参数。
+
+返回当前分 P 的字幕轨道。当前实现使用每个轨道中的 `subtitle_url` 下载
+字幕正文，不处理加密的 `subtitle_url_v2`。
+
+### 输出路径函数
+
+| 函数 | 作用 |
+| --- | --- |
+| `safe_filename(value)` | 替换 Windows 文件名非法字符，并清理末尾空格和句点 |
+| `get_video_dir(video_info)` | 生成 `output/{UP主}_{标题}_{BV号}/` |
+
+`get_video_dir()` 读取视频数据的 `owner.name`、`title` 和 `bvid`。缺少字段时
+分别使用 `unknown`、`untitled` 和 `unknown`。
+
+## 视频信息
+
+`crawler_info.py` 负责保存视频公开信息和 UP 主粉丝数。
+
+### 采集流程
+
+1. 请求视频详情接口。
+2. 读取 `stat` 和 `owner`。
+3. 请求 [`/x/relation/stat`](https://api.bilibili.com/x/relation/stat?vmid=486906719) 获取 UP 主粉丝数。
+4. 生成视频目录并写入 `video_info.json`。
+
+### 时间格式化
+
+`format_published_at(timestamp)` 使用 `Asia/Shanghai` 时区转换秒级时间戳：
 
 ```text
-/x/relation/stat?vmid=UP主MID
+2026-09-13T12:00:00+08:00
 ```
 
-返回 UP 主粉丝数。
+### 输出字段
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `mid` | `int / str` | 是 | UP 主用户 ID |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
+| 字段 | 含义 |
+| --- | --- |
+| `title` | 视频标题 |
+| `like` | 点赞数 |
+| `coin` | 投币数 |
+| `favorite` | 收藏数 |
+| `share` | 分享数 |
+| `published_at` | 发布时间，ISO 8601 格式 |
+| `view` | 播放数 |
+| `description` | 视频简介 |
+| `up_name` | UP 主昵称 |
+| `reply` | 视频总评论数，包含一级评论下面的子评论 |
+| `danmaku` | 弹幕数 |
+| `up_follower_count` | UP 主粉丝数 |
 
-返回：`int`，UP 主粉丝数。
+`crawl_video_info(bvid=DEFAULT_BVID)` 返回 `video_info.json` 的完整路径。
 
-### `_extract_subtitle_tracks(data)`
+## 评论采集
 
-从播放器响应中读取：
+`crawler_comment.py` 采集视频的全部一级评论，并保存为 CSV。
 
-```python
-subtitle.get("subtitles") or subtitle.get("list") or []
-```
+### 接口与分页
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `data` | `dict` | 是 | 播放器接口返回的 `data` |
+使用 WBI 游标分页接口
+[`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30)。
+直接点击示例链接通常只会看到缺少签名的错误，实际请求必须动态生成 WBI 参数。
 
-返回：`list[dict]`，字幕轨道列表；没有字幕时为空列表。
+关键参数：
 
-### `get_player_subtitles(bvid, cid, cookie, mixin_key)`
+| 参数 | 说明 |
+| --- | --- |
+| `oid` | 视频 `aid`，不能直接填写 `bvid` |
+| `type=1` | 评论对象类型为视频 |
+| `mode=2` | 按发布时间倒序返回，便于使用游标稳定翻页 |
+| `next` | 下一页游标 |
+| `pagination_str` | 下一页 offset |
+| `ps=30` | 每页评论数量 |
 
-当前只请求：
+采集循环会结合 `is_end` 和 `next_offset` 判断是否结束，并按照 `rpid` 去重。
+已有评论 CSV 时，采集会从第一页开始增量检查；连续到达旧评论边界后停止。
+如果任务中断，`comments_{BV号}.checkpoint.json` 会保存当前游标，下次运行
+从断点继续。
+
+### 评论对象类型
+
+`type` 的其他常见取值来自接口和社区整理，实际含义应以 Bilibili 返回为准：
+
+| `type` | 评论区类型 | `oid` 的含义 |
+| --- | --- | --- |
+| `1` | 视频稿件 | 视频 `aid` |
+| `2` | 话题 | 话题 ID |
+| `4` | 活动 | 活动 ID |
+| `5` | 小视频 | 小视频 ID |
+| `6` | 小黑屋封禁信息 | 封禁公示 ID |
+| `7` | 公告信息 | 公告 ID |
+| `8` | 直播活动 | 直播间 ID |
+| `9` | 活动稿件 | 待验证 |
+| `10` | 直播公告 | 待验证 |
+| `11` | 相簿或图片动态 | 相簿 ID |
+| `12` | 专栏 | 专栏 `cvid` |
+| `13` | 票务 | 待验证 |
+| `14` | 音频 | 音频 `auid` |
+| `15` | 风纪委员会 | 众裁项目 ID |
+| `16` | 点评 | 待验证 |
+| `17` | 动态，包括纯文字动态和分享 | 动态 ID |
+| `18` | 播单 | 待验证 |
+| `19` | 音乐播单 | 待验证 |
+| `20` | 漫画 | 待验证 |
+| `21` | 漫画 | 待验证 |
+| `22` | 漫画 | 漫画 `mcid` |
+| `33` | 课程 | 课程 `epid` |
+
+### 评论排序模式
+
+| `mode` | 排序方式 | 说明 |
+| --- | --- | --- |
+| `0` | 默认排序 | 通常会被服务端归一到热门排序 |
+| `1` | 综合排序 | 名称通常为“评论”，顺序不稳定 |
+| `2` | 按时间排序 | 名称通常为“最新评论”，本项目固定使用 |
+| `3` | 按热度排序 | 名称通常为“热门评论”，顺序会随点赞变化 |
+
+### 文本和图片处理
+
+`normalize_text(value)` 会把评论文本转成适合 CSV 的单行形式：
+
+- 统一换行符。
+- 连续空格压缩为一个空格。
+- 换行保存为字面量 `\n`。
+
+`parse_image_urls(content)` 从 `content.pictures` 读取图片地址：
+
+- 协议相对地址 `//...` 会补成 `https://...`。
+- `http://...` 会改成 `https://...`。
+- 只保存 URL，不下载图片。
+
+### `parse_comment(comment)` 输出字段
+
+| 输出字段 | 接口来源 | 类型 | 含义 | 缺失时 |
+| --- | --- | --- | --- | --- |
+| `rpid` | `comment.rpid` | `int` | 评论唯一 ID，用于去重和标识评论 | `None` |
+| `mid` | `comment.mid` | `int` | 发表评论的用户 ID | `None` |
+| `user_name` | `comment.member.uname` | `str` | 评论者昵称，经过 `normalize_text()` 清理 | 空字符串 |
+| `user_level` | `comment.member.level_info.current_level` | `int` | 评论者当前等级，通常为 `0` 到 `6` | `0` |
+| `message` | `comment.content.message` | `str` | 评论正文，转换为适合 CSV 的单行文本 | 空字符串 |
+| `ctime` | `comment.ctime` | `int` | 评论发布时间，秒级 Unix 时间戳 | `0` |
+| `like` | `comment.like` | `int` | 评论点赞数 | `0` |
+| `reply_count` | `comment.count` | `int` | 评论下的回复数量；接口字段名是 `count` | `0` |
+| `state` | `comment.state` | `int` | 评论状态；`0` 通常表示正常 | `0` |
+| `image_urls` | `comment.content.pictures` | `list[str]` | 评论图片 URL 列表 | 空列表 |
+
+`reply_count` 只是回复数量，不包含子评论正文。需要子评论正文时，必须根据
+评论 `rpid` 再请求对应接口。
+
+### 评论计数
+
+必须区分两个数字：
+
+- 一级评论数：CSV 实际保存的行数，也是直接回复视频的顶层评论数。
+- 视频总评论数：接口 `cursor.all_count`，包含一级评论下面的子评论。
+
+### 输出文件
 
 ```text
-/x/player/wbi/v2
+comments_{BV号}.csv
 ```
 
-请求参数只有：
+CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` 会使用
+`|` 连接多个图片地址。
 
-```json
-{
-  "bvid": "BV号",
-  "cid": 当前分P的CID
-}
+`crawl_comments(bvid=DEFAULT_BVID, workers=None)` 返回 CSV 的完整路径。
+采集过程中会逐页追加结果，并原子更新
+`comments_{BV号}.checkpoint.json`；任务完成后断点文件会删除。
+`workers` 仅用于兼容旧调用，当前游标分页必须顺序请求，因此传入时不生效。
+
+## 视频搜索
+
+`crawler_search.py` 支持关键词搜索和热搜批量搜索。
+
+### 关键词搜索流程
+
+1. 读取 Cookie 和 WBI 密钥。
+2. 校验关键词、页码、页数、每页数量和线程数。
+3. 并发请求指定范围的搜索页。
+4. 按照 `bvid` 去重，只保留第一次出现的结果。
+5. 并发请求视频详情，补充分享数、播放数等字段。
+6. 按 UP 主 `mid` 去重后，并发请求粉丝数。
+7. 按照搜索结果顺序写入 CSV。
+
+### 发布时间
+
+搜索结果中的 `pubdate` 是秒级时间戳。输出字段 `published_at` 会转换成
+`Asia/Shanghai` 时区的 ISO 时间。
+
+视频详情可用时优先使用详情中的 `pubdate`；详情请求失败时回退到搜索结果。
+时间缺失或无法转换时，`published_at` 为空字符串。
+
+### 并发与重试
+
+`run_concurrently()` 使用 `ThreadPoolExecutor` 并发处理输入，并按原顺序返回
+结果。
+
+`request_with_retry()` 捕获 `RuntimeError`，最多尝试三次：
+
+- 第一次失败后等待 1 秒。
+- 第二次失败后等待 2 秒。
+- 第三次失败时重新抛出异常。
+
+视频详情和粉丝数使用安全包装函数。单个详情或粉丝请求失败时不会中断整个
+搜索任务，而是分别回退到 `None` 或 `0`。
+
+### 搜索 CSV 字段
+
+| 列名 | 含义 |
+| --- | --- |
+| `bvid` | 视频 BV 号 |
+| `title` | 视频标题，已移除搜索高亮标签 |
+| `published_at` | 发布时间 |
+| `author` | UP 主名称 |
+| `mid` | UP 主用户 ID |
+| `like` | 点赞数 |
+| `comment_count` | 评论数 |
+| `favorite_count` | 收藏数 |
+| `share_count` | 分享数 |
+| `author_follower_count` | UP 主粉丝数 |
+| `play_count` | 播放数 |
+| `danmaku_count` | 弹幕数 |
+
+普通视频搜索接口不提供视频级官方热度字段，因此搜索 CSV 不包含
+`heat_score`。热搜关键词的热度只写入 `hot_list.csv`。
+
+### 热搜搜索
+
+`crawl_hot_search(limit=10, page=1, pages=1, page_size=20, workers=3)`：
+
+1. 请求热搜列表。
+2. 按榜单顺序逐个关键词执行搜索。
+3. 单个热搜词失败时记录错误并继续处理后续词。
+4. 写入 `hot_list.csv` 和每个关键词的搜索 CSV。
+
+命令行 `-H` 不支持 `-p`，固定对每个热搜词只搜索第 1 页。CLI 可调整
+`--limit`、`--page-size` 和 `-w`。
+
+`hot_list.csv` 字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `rank` | 热搜排名 |
+| `keyword` | 实际搜索关键词 |
+| `show_name` | 热搜展示名称 |
+| `heat_score` | 热搜关键词热度 |
+| `result_file` | 搜索 CSV 的相对路径 |
+| `status` | `success` 或 `failed` |
+| `error` | 失败原因，成功时为空 |
+
+### 搜索输出路径
+
+普通搜索：
+
+```text
+output/search/{关键词}/search_{时间}_{数据量}.csv
 ```
 
-每个可用字幕轨道通常直接包含 `subtitle_url`，下载后即可得到字幕 JSON，
-不需要额外解析 Protobuf 或解密 `subtitle_url_v2`。
+热搜搜索：
 
-| 参数 | 类型 | 必填 | 说明 |
+```text
+output/search/hot-search/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
+output/search/hot-search/{运行时间}/hot_list.csv
+```
+
+运行时间格式为 `YYYYMMDD_HHMMSS`。
+
+## 字幕采集
+
+`crawler_subtitle.py` 下载视频软字幕，并同时生成 JSON 和 SRT。
+
+### 采集流程
+
+1. 读取 Cookie 和 WBI 密钥。
+2. 获取视频详情和所有分 P。
+3. 对每个分 P 调用 [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199)。
+4. 读取字幕轨道的 `subtitle_url` 并下载 JSON。
+5. 保存原始字幕数据，并生成 SRT。
+
+`-p START,END` 可以限制分 P 范围，`--language` 可以限制语言，例如
+`zh-CN` 或 `ai-zh`。不传过滤参数时采集全部可用字幕。没有软字幕时只打印
+提示，不生成文件。
+
+### 字幕接口选择
+
+| 接口 | 数据格式 | 轨道地址 | 当前是否使用 |
 | --- | --- | --- | --- |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `cid` | `int` | 是 | 指定分 P 的 CID |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-| `mixin_key` | `str` | 是 | WBI 签名密钥 |
+| [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | JSON | `subtitle_url` | 使用 |
+| [`/x/v2/subtitle/web/view`](https://api.bilibili.com/x/v2/subtitle/web/view?oid=137649199&pid=80433022) | Protobuf | 通常只有加密的 `subtitle_url_v2` | 不使用 |
+| [`/x/player/v2`](https://api.bilibili.com/x/player/v2?bvid=BV1GJ411x7h7&cid=137649199) | JSON | 可能返回缓存字幕 | 不使用 |
 
-返回：`list[dict]`，当前分 P 的可用字幕轨道。
+项目不使用
+[`/x/player/v2`](https://api.bilibili.com/x/player/v2?bvid=BV1GJ411x7h7&cid=137649199)，
+因为实测可能返回其他视频的字幕缓存。直接合并这些轨道会把无关内容写入
+当前视频。
 
-## 字幕接口说明
+### 空字幕判断
 
-项目测试过三个相关入口。
-
-### `/x/player/wbi/v2`
-
-当前实现使用的接口。
-
-- JSON 响应。
-- 返回完整播放器数据，字幕位于 `data.subtitle`。
-- 每个字幕轨道直接提供 `subtitle_url`。
-- 正常情况下内容正确。
-
-### `/x/v2/subtitle/web/view`
-
-专门返回字幕列表的新接口。
-
-- Protobuf 二进制响应。
-- 需要 `oid=cid`、`pid=aid` 等参数。
-- 轨道通常只提供加密的 `subtitle_url_v2`。
-- 使用播放器 XOR 密钥还原后才能下载。
-- 在已测试视频中，其有效字幕内容与 `/x/player/wbi/v2` 一致。
-
-因此该接口没有提升字幕内容质量，只会增加 Protobuf 解析和解密复杂度。
-
-### `/x/player/v2`
-
-不需要 WBI 签名的普通播放器接口，但当前项目不使用它。
-
-实测发现它可能返回错误缓存：
-
-- 对一个音乐视频返回了其他视频的 iPhone 评测字幕。
-- 对一个原神视频返回了其他视频的完整文字稿。
-- 有时相同请求会返回不同数量和不同内容的字幕。
-
-如果把这些错误轨道合并进正常结果，会在字幕 JSON 和 SRT 中混入无关内容。
-
-### 空字幕结果
-
-以下响应表示视频没有公开的软字幕轨道：
+当接口返回：
 
 ```json
 {
@@ -406,339 +710,92 @@ subtitle.get("subtitles") or subtitle.get("list") or []
 }
 ```
 
-同时检查 `need_login_subtitle`：
+表示当前分 P 没有公开软字幕。`need_login_subtitle=False` 表示空结果不是
+登录权限造成的。
 
-```text
-False
-```
+### 硬字幕
 
-表示空字幕不是登录权限造成的。
-
-## 硬字幕
-
-视频画面中可见的字幕不一定存在于字幕接口中。
-
-在播放器中关闭弹幕后，如果底部字幕仍然存在，同时
-`.bpx-player-subtitle-wrap` 没有文本节点，则该字幕是直接烧录进视频画面的
-硬字幕。
-
-硬字幕属于视频像素，字幕接口无法采集。当前项目不支持硬字幕 OCR，只能通过
-以下流程生成近似字幕：
+画面中烧录的硬字幕不属于字幕接口数据。字幕接口无法直接获取，只能使用
+OCR 近似识别：
 
 1. 获取视频画面。
-2. 按固定帧率或仅在画面变化时抽样。
+2. 固定帧率抽样，或只在画面变化时抽样。
 3. 裁切字幕区域。
 4. 使用 PaddleOCR、RapidOCR 等工具识别。
 5. 合并连续相同文本。
 6. 根据帧时间生成 SRT。
 
-OCR 结果可能有错字，时间轴精度也受抽样频率影响。
+OCR 结果可能有错字，时间轴精度取决于抽样频率和视频中的字幕变化速度。
 
-## crawler_info.py
+### 保存函数
 
-负责保存视频公开信息。
-
-### `format_published_at(timestamp)`
-
-把秒级时间戳转换为 `Asia/Shanghai` 时区的 ISO 时间。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `timestamp` | `int / float` | 是 | Unix 秒级时间戳 |
-
-返回：`str`，例如 `2026-09-13T12:00:00+08:00`。
-
-### `crawl_video_info(bvid=DEFAULT_BVID)`
-
-保存以下字段到 `video_info.json`：
-
-- `title`
-- `like`
-- `coin`
-- `favorite`
-- `share`
-- `published_at`
-- `view`
-- `description`
-- `up_name`
-- `reply`
-- `danmaku`
-- `up_follower_count`
-
-其中 `reply` 是视频总评论数，包含一级评论下面的子评论。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 否 | 视频 BV 号；默认使用 `DEFAULT_BVID` |
-
-返回：`Path`，`video_info.json` 的完整路径。
-
-## crawler_comment.py
-
-负责采集视频的一级评论和顶层置顶评论，并保存为 CSV。
-
-### 评论接口
-
-使用 WBI 游标分页接口：
-
-```text
-/x/v2/reply/wbi/main
-```
-
-关键参数包括：
-
-- `oid`：视频 aid。
-- `type=1`：视频评论。
-- `mode=2`：按时间排序。
-- `next`：下一页游标。
-- `pagination_str`：翻页 offset。
-- `ps=30`：每页数量。
-
-### `parse_image_urls(content)`
-
-提取评论图片地址，并统一转换成 HTTPS URL。只保存地址，不下载图片。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `content` | `dict` | 是 | 评论 `content` 对象，读取其中的 `pictures` |
-
-返回：`list[str]`，统一为 HTTPS 的图片地址列表。
-
-### `normalize_text(value)`
-
-把评论文本转换成适合 CSV 的单行形式：
-
-- 统一换行符。
-- 连续空格压缩为一个空格。
-- 换行保存为字面量 `\n`。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `value` | `Any` | 是 | 原始文本或可转换为文本的值 |
-
-返回：`str`，适合写入单行 CSV 的文本。
-
-### `parse_comment(comment)`
-
-从接口评论对象中提取轻量字段。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `comment` | `dict` | 是 | 评论接口中的单条评论对象 |
-
-返回：`dict`，包含评论 CSV 所需字段。
-
-### `request_comment_page(oid, page_cursor, cookie, mixin_key)`
-
-请求一页一级评论。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `oid` | `int` | 是 | 视频 aid |
-| `page_cursor` | `dict` | 是 | 游标，可包含 `next` 和 `offset` |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-| `mixin_key` | `str` | 是 | WBI 签名密钥 |
-
-返回：`dict`，评论接口的 `data`。
-
-### `request_comment_page_with_retry(oid, page_cursor, cookie, mixin_key)`
-
-请求失败时最多重试三次，每次间隔一秒。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `oid` | `int` | 是 | 视频 aid |
-| `page_cursor` | `dict` | 是 | 当前页游标 |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-| `mixin_key` | `str` | 是 | WBI 签名密钥 |
-
-返回：`dict`，重试成功后的评论接口数据。
-
-### `extract_page_comments(data, include_top=False)`
-
-提取当前页评论。第一页会同时包含 `top_replies` 和普通 `replies`。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `data` | `dict` | 是 | 一页评论接口数据 |
-| `include_top` | `bool` | 否 | 是否包含 `top_replies`，默认 `False` |
-
-返回：`list[dict]`，本页一级评论记录。
-
-### `crawl_comments(bvid=DEFAULT_BVID, workers=None)`
-
-采集流程：
-
-1. 使用 BV 号取得 aid。
-2. 取得 WBI 签名密钥。
-3. 按时间游标依次请求评论页。
-4. 按照 `rpid` 去重。
-5. 写入 `comments_{BV号}.csv`。
-
-评论计数必须区分：
-
-- `一级评论数`：CSV 实际保存的行数，也是直接回复视频的顶层评论数。
-- `视频总评论数`：接口 `cursor.all_count`，包含一级评论下面的子评论。
-
-运行日志会分别显示两个数字。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 否 | 视频 BV 号；默认使用 `DEFAULT_BVID` |
-| `workers` | `int / None` | 否 | 兼容旧调用；传入后只提示不生效 |
-
-返回：`Path`，`comments_{BV号}.csv` 的完整路径。
-
-### 评论 CSV 列
-
-| 列名 | 含义 |
-| --- | --- |
-| `rpid` | 评论 ID |
-| `mid` | 评论者用户 ID |
-| `user_name` | 评论者昵称 |
-| `user_level` | 评论者 B 站等级 |
-| `message` | 评论正文 |
-| `ctime` | 评论发布时间，秒级时间戳 |
-| `like` | 评论点赞数 |
-| `reply_count` | 该一级评论下面的子评论数量 |
-| `state` | 评论状态，`0` 表示正常 |
-| `image_urls` | 评论图片 URL，多个地址用 `|` 分隔 |
-
-## crawler_subtitle.py
-
-负责下载软字幕，并生成 JSON 和 SRT。
-
-### `download_subtitle_json(url, cookie)`
-
-请求 `subtitle_url`，返回字幕正文 JSON。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `url` | `str` | 是 | 字幕轨道中的 `subtitle_url` |
-| `cookie` | `str` | 是 | HTTP Cookie 请求头 |
-
-返回：`dict`，字幕正文 JSON。
-
-### `format_srt_timestamp(seconds)`
-
-把秒数转换为 SRT 时间格式：
-
-```text
-HH:MM:SS,mmm
-```
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `seconds` | `int / float` | 是 | 相对视频开始的秒数 |
-
-返回：`str`，SRT 时间字符串。
-
-### `subtitle_to_srt(subtitle)`
-
-读取字幕 JSON 的 `body`，逐条生成 SRT 块。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `subtitle` | `dict` | 是 | 字幕正文 JSON，正文位于 `body` |
-
-返回：`str`，完整 SRT 文本。
-
-### `save_subtitle(video_dir, bvid, cid, page_number, part, subtitle_item, subtitle_data)`
-
-每条字幕轨道生成两个文件：
+`save_subtitle()` 为每条字幕轨道生成：
 
 ```text
 subtitle_{BV号}_p{分P}_{语言}.json
 subtitle_{BV号}_p{分P}_{语言}.srt
 ```
 
-JSON 外层保存视频、分 P、语言和原始字幕数据。
+JSON 外层字段：
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `video_dir` | `Path` | 是 | 视频输出目录 |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `cid` | `int` | 是 | 当前分 P 的 CID |
-| `page_number` | `int` | 是 | 分 P 序号 |
-| `part` | `str` | 是 | 分 P 标题 |
-| `subtitle_item` | `dict` | 是 | 字幕轨道元数据，如 `lan`、`lan_doc` |
-| `subtitle_data` | `dict` | 是 | 下载得到的字幕正文 JSON |
+| 字段 | 含义 |
+| --- | --- |
+| `bvid` | 视频 BV 号 |
+| `cid` | 当前分 P 的 CID |
+| `page` | 分 P 序号 |
+| `part` | 分 P 标题 |
+| `language` | 字幕语言代码 |
+| `language_name` | 字幕语言名称 |
+| `subtitle` | 原始字幕 JSON，正文位于 `subtitle.body` |
 
-返回：`tuple[Path, Path]`，依次为 JSON 路径和 SRT 路径。
+`subtitle_to_srt(subtitle)` 读取 `body` 并生成 SRT。
+`format_srt_timestamp(seconds)` 输出 `HH:MM:SS,mmm` 格式的时间。
 
-### `crawl_subtitles(bvid=DEFAULT_BVID, page_number=None, language=None)`
+重新采集不会自动删除旧字幕文件。如果视频字幕发生变化，旧文件需要人工清理。
 
-当前流程：
+## 弹幕采集
 
-1. 获取登录 Cookie 和 WBI 密钥。
-2. 获取视频所有分 P。
-3. 对每个分 P 调用 `get_player_subtitles()`。
-4. 下载每条字幕的 `subtitle_url`。
-5. 保存 JSON 并同时生成 SRT。
+`crawler_dm.py` 使用 Playwright 打开视频页面，监听播放器发出的弹幕请求。
 
-没有软字幕时只打印提示，不生成新文件。
+### 数据来源
 
-如果视频此前留下过错误字幕文件，重新采集不会自动删除旧文件，需要人工确认
-和清理。
+播放器请求
+[`/x/v2/dm/web/seg.so`](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1)。
+该接口通常还依赖浏览器请求头和登录状态。
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 否 | 视频 BV 号；默认使用 `DEFAULT_BVID` |
-| `page_number` | `int / None` | 否 | 只处理指定分 P；省略时处理全部 |
-| `language` | `str / None` | 否 | 只处理指定语言，例如 `zh-CN`、`ai-zh` |
+响应是 Protobuf，由 `dm_pb2.DmSegMobileReply` 解码。每个弹幕元素由
+`DanmakuElem` 描述。
 
-返回：`None`。
+### `DanmakuElem` 字段
 
-## crawler_dm.py
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | `int64` | 弹幕 ID |
+| `progress` | `int64` | 弹幕出现时间，单位毫秒 |
+| `mode` | `int32` | 显示模式，例如滚动、顶部、底部 |
+| `fontsize` | `int32` | 字号 |
+| `color` | `uint32` | 十进制 RGB 颜色 |
+| `midHash` | `string` | 发送用户的匿名 Hash |
+| `content` | `string` | 弹幕文字 |
+| `ctime` | `int64` | 发送时间，Unix 时间戳 |
+| `weight` | `int32` | 显示或排序权重 |
+| `action` | `string` | 附加行为，通常为空 |
+| `pool` | `int32` | 弹幕池编号 |
+| `idStr` | `string` | 弹幕 ID 的字符串形式 |
 
-使用 Playwright 监听播放器请求，采集弹幕。
+### 采集流程
 
-### 弹幕请求
+1. 使用登录状态打开 Chrome。
+2. 监听 `/seg.so` 响应。
+3. 校验响应中的 `oid` 是否等于当前分 P 的 `cid`。
+4. 解码 Protobuf。
+5. 按弹幕 ID、时间点和内容去重。
+6. 追加写入 CSV。
 
-播放器请求：
+播放器通常一次加载约 120 秒的弹幕。程序每 120 秒跳转一次播放位置，触发
+不同时间段的请求。采集结果可能受播放器策略、网络状态和视频长度影响。
 
-```text
-/x/v2/dm/web/seg.so
-```
-
-响应是 Protobuf，由 `dm_pb2.DmSegMobileReply` 解码。
-
-### `crawl_page(page, bvid, page_info, total_pages, video_dir, use_page_suffix)`
-
-采集一个分 P：
-
-1. 监听 `/seg.so` 响应。
-2. 校验响应中的 `oid` 是否等于当前分 P 的 `cid`。
-3. 使用 Protobuf 解码弹幕。
-4. 按弹幕 ID、时间点和内容去重。
-5. 追加写入 CSV。
-
-播放器通常一次加载约 120 秒的弹幕，因此代码每 120 秒跳转一次播放位置，
-触发不同时间段的请求。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `page` | `playwright.sync_api.Page` | 是 | 已打开的浏览器页面 |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `page_info` | `dict` | 是 | 当前分 P 信息，需包含 `cid` 和可选 `page`、`part` |
-| `total_pages` | `int` | 是 | 视频总 P 数，用于日志显示 |
-| `video_dir` | `Path` | 是 | 视频输出目录 |
-| `use_page_suffix` | `bool` | 是 | 是否在弹幕文件名中加入分 P 后缀 |
-
-返回：`int`，当前分 P 写入的弹幕数量。
-
-### `goto(bvid, page_number=None)`
-
-打开 Chrome，加载 `bilibili_state.json`，遍历全部分 P 并汇总弹幕数量。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `bvid` | `str` | 是 | 视频 BV 号 |
-| `page_number` | `int / None` | 否 | 只采集指定分 P；省略时采集全部 |
-
-返回：`None`。
-
-### 弹幕 CSV 列
+### 弹幕 CSV 字段
 
 | 列名 | 含义 |
 | --- | --- |
@@ -748,59 +805,76 @@ JSON 外层保存视频、分 P、语言和原始字幕数据。
 | `模式` | 弹幕显示模式 |
 | `用户Hash` | 发送用户的匿名 Hash |
 
-## video_paths.py
+`bilibili -d` 运行时可以传入 BV 号和 `-p START,END`。
 
-统一管理输出目录和文件名。
+## 输出文件
 
-### `safe_filename(value)`
-
-替换 Windows 文件名不允许的字符：
+### 视频目录
 
 ```text
-< > : " / \ | ? *
+output/
+└── {UP主}_{标题}_{BV号}/
+    ├── video_info.json
+    ├── comments_{BV号}.csv
+    ├── subtitle_{BV号}_p1_{语言}.json
+    ├── subtitle_{BV号}_p1_{语言}.srt
+    ├── danmaku_{BV号}.csv
+    └── danmaku_{BV号}_p1.csv
 ```
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `value` | `Any` | 是 | 原始文件名或路径片段 |
+单 P 视频的弹幕文件为 `danmaku_{BV号}.csv`。多 P 视频会为每个分 P 生成带
+`_p{分P}` 后缀的文件。
 
-返回：`str`，替换非法字符并清理首尾空格、句点后的文件名。
+标题中的 `?`、`:`、`/`、`\`、`|`、`*` 等非法文件名字符会替换为 `_`。
 
-### `get_video_dir(video_info)`
-
-生成输出目录：
+### 搜索目录
 
 ```text
-output/{UP主}_{标题}_{BV号}/
+output/search/
+├── {关键词}/
+│   └── search_{时间}_{数据量}.csv
+└── hot-search/
+    └── {运行时间}/
+        ├── hot_list.csv
+        └── {热搜词}/
+            └── search_{时间}_{数据量}.csv
 ```
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `video_info` | `dict` | 是 | 视频接口数据，读取 `owner.name`、`title`、`bvid` |
+搜索数据不会写入视频目录。
 
-返回：`Path`，视频输出目录。
+## 错误处理与重试
 
-## 输出文件汇总
+| 模块 | 行为 |
+| --- | --- |
+| `login.py` | 服务端确认 Cookie 失效时重新登录；网络异常时先按已登录处理 |
+| `crawler_comment.py` | 评论页请求最多重试三次，每次间隔一秒 |
+| `crawler_search.py` | 搜索请求最多重试三次，等待时间依次为 1 秒和 2 秒 |
+| `crawler_search.py` | 视频详情失败回退到搜索结果，粉丝数失败回退为 `0` |
+| `crawler_subtitle.py` | 单条字幕缺少 `subtitle_url` 时跳过 |
+| `crawler_dm.py` | 只处理状态正常的 `/seg.so` 响应 |
 
-每个视频目录通常包含：
-
-```text
-video_info.json
-comments_{BV号}.csv
-subtitle_{BV号}_p1_{语言}.json
-subtitle_{BV号}_p1_{语言}.srt
-danmaku_{BV号}.csv
-```
-
-多 P 视频的弹幕文件会带上分 P 后缀。
+当前没有统一的全局限速器。批量搜索或大视频评论采集时，应主动降低并发数。
 
 ## 已知限制
 
-- Bilibili Web 接口不是稳定公共 API。
-- `/x/player/v2` 可能返回错误的缓存字幕，因此当前项目不使用。
-- 接口返回 `subtitles: []` 表示没有公开软字幕。
-- 画面中的硬字幕无法通过字幕接口采集，只能使用 OCR。
+- Bilibili Web 接口不是稳定公共 API，字段和限制可能随时变化。
+- 充电专属、付费、地区限制或仅自己可见的视频可能无法访问。
+- 视频信息是请求时的快照，不会自动更新。
+- 评论只包含一级评论，不包含完整子评论正文。
+- 评论图片只保存 URL，CDN 地址可能失效。
+- 弹幕采用分段跳转采集，可能存在延迟、重复或遗漏。
+- 当前软字幕接口可能返回空列表。
+- [`/x/player/v2`](https://api.bilibili.com/x/player/v2?bvid=BV1GJ411x7h7&cid=137649199) 可能返回错误缓存字幕，因此项目不使用该接口。
 - 音乐视频的 AI 字幕经常只输出“音乐”，不能当作完整歌词。
-- 评论 CSV 只包含一级评论，不包含子评论正文。
-- 视频信息、评论和弹幕都是采集时的快照。
-- 旧字幕文件不会在视频字幕消失后自动清理。
+- 硬字幕不支持直接采集，只能通过 OCR 近似识别。
+- 搜索接口不提供视频级官方热度，普通搜索 CSV 不包含 `heat_score`。
+- 热搜关键词的 `heat_score` 保存在 `hot_list.csv`，与视频热度不是同一指标。
+- 搜索结果的 `share_count` 在缺少视频详情时可能回退为 `0`。
+- 旧字幕文件不会因为接口返回变化而自动删除。
+- 输出文件使用同名覆盖策略，不会自动创建历史版本。
+
+## 合规说明
+
+请合理设置请求频率，仅采集你有权访问和使用的内容，并遵守 Bilibili 用户
+协议、网站规则和相关法律法规。评论和其他用户数据可能涉及个人信息，公开
+或二次使用前应确认授权和适用范围。

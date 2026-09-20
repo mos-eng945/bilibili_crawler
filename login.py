@@ -151,6 +151,6 @@ def ensure_login():
     login()
 
 
-# 单独运行本文件时只做登录这一件事：python login.py
+# 统一命令行入口：bilibili -l
 if __name__ == "__main__":
     ensure_login()

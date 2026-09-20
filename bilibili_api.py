@@ -1,7 +1,8 @@
-"""Bilibili 公共接口和 WBI 签名工具。"""
+"""Bilibili 公共接口、WBI 签名和输出路径工具。"""
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -12,6 +13,24 @@ from login import get_cookie_header
 
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def safe_filename(value):
+    """移除 Windows 文件名不允许的字符。"""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value))
+    return cleaned.rstrip(" .")
+
+
+def get_video_dir(video_info):
+    """根据 UP 主、标题和 BV 号生成视频输出目录。"""
+    up_name = safe_filename(
+        video_info.get("owner", {}).get("name") or "unknown"
+    )
+    title = safe_filename(video_info.get("title") or "untitled")
+    bvid = safe_filename(video_info.get("bvid") or "unknown")
+
+    return BASE_DIR / "output" / f"{up_name}_{title}_{bvid}"
 
 # Bilibili WBI 签名使用的字符重排表
 MIXIN_KEY_ENC_TAB = [
@@ -160,6 +179,41 @@ def get_up_follower_count(mid, cookie):
     data = request_json(f"{API_BASE}/x/relation/stat?{query}", cookie)
 
     return data.get("follower", 0)
+
+
+def search_videos(keyword, cookie, mixin_key, page=1, page_size=20):
+    """按关键词搜索视频。"""
+    keyword = keyword.strip()
+
+    if not keyword:
+        raise ValueError("搜索关键词不能为空")
+
+    page = max(1, int(page))
+    page_size = min(max(1, int(page_size)), 50)
+
+    return request_wbi_json(
+        "/x/web-interface/wbi/search/type",
+        {
+            "search_type": "video",
+            "keyword": keyword,
+            "page": page,
+            "page_size": page_size,
+        },
+        cookie,
+        mixin_key,
+    )
+
+
+def get_hot_search(cookie, limit=10):
+    """取得 Bilibili 搜索热搜列表。"""
+    limit = min(max(1, int(limit)), 50)
+    query = urllib.parse.urlencode({"limit": limit})
+    data = request_json(
+        f"{API_BASE}/x/web-interface/search/square?{query}",
+        cookie,
+    )
+
+    return (data.get("trending") or {}).get("list") or []
 
 
 def _extract_subtitle_tracks(data):

@@ -16,12 +16,13 @@ from bilibili_api import (
     USER_AGENT,
     get_cookie_header,
     get_player_subtitles,
+    get_video_dir,
     get_video_info,
     get_wbi_mixin_key,
+    safe_filename,
 )
 from login import ensure_login
-from main import DEFAULT_BVID
-from video_paths import get_video_dir, safe_filename
+from main import DEFAULT_BVID, parse_page_range
 
 
 def download_subtitle_json(url, cookie):
@@ -115,10 +116,10 @@ def save_subtitle(
 
 def crawl_subtitles(
     bvid=DEFAULT_BVID,
-    page_number=None,
+    page_range=None,
     language=None,
 ):
-    """下载视频全部或指定分 P 的字幕。"""
+    """下载视频全部或指定分 P 范围的字幕。"""
     cookie = get_cookie_header()
     mixin_key = get_wbi_mixin_key(cookie)
     video_info = get_video_info(bvid, cookie)
@@ -128,11 +129,18 @@ def crawl_subtitles(
     if not pages:
         raise RuntimeError(f"没有找到视频分 P：{bvid}")
 
-    if page_number is not None:
-        pages = [page for page in pages if page.get("page") == page_number]
+    if page_range is not None:
+        page_start, page_end = page_range
+        pages = [
+            page
+            for page in pages
+            if page_start <= page.get("page", 0) <= page_end
+        ]
 
         if not pages:
-            raise RuntimeError(f"视频 {bvid} 没有第 {page_number} 个分 P")
+            raise RuntimeError(
+                f"视频 {bvid} 没有分 P {page_start}-{page_end}"
+            )
 
     downloaded = 0
 
@@ -192,10 +200,12 @@ def main():
         help="视频 BV 号，不填写时使用 DEFAULT_BVID",
     )
     parser.add_argument(
-        "--page",
-        type=int,
+        "-p",
+        dest="page_range",
+        type=parse_page_range,
+        metavar="START,END",
         default=None,
-        help="只采集指定分 P",
+        help="只采集指定分 P 范围",
     )
     parser.add_argument(
         "--language",
@@ -207,7 +217,7 @@ def main():
     ensure_login()
     crawl_subtitles(
         args.bvid,
-        page_number=args.page,
+        page_range=args.page_range,
         language=args.language,
     )
 

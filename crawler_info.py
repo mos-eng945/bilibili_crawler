@@ -7,11 +7,11 @@ from zoneinfo import ZoneInfo
 from bilibili_api import (
     get_cookie_header,
     get_up_follower_count,
+    get_video_dir,
     get_video_info,
 )
 from login import ensure_login
 from main import DEFAULT_BVID
-from video_paths import get_video_dir
 
 CHINA_TIMEZONE = ZoneInfo("Asia/Shanghai")
 

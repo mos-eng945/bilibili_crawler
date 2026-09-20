@@ -1,112 +1,233 @@
-"""
-Bilibili 数据爬取入口。
-
-整体思路：
-1. 从命令行读取 BV 号，未提供时使用 DEFAULT_BVID。
-2. 先确保 Bilibili 登录状态可用。
-3. 保存视频信息。
-4. 下载全部一级评论。
-5. 下载该视频的字幕。
-6. 再打开视频并采集弹幕。
-"""
+"""Bilibili 数据采集命令行入口。"""
 
 import argparse
 
 from login import ensure_login
 
-# 所有爬虫默认使用的视频，只需要在这里修改
 DEFAULT_BVID = "BV1UT42167xb"
 
+OPTION_FLAGS = {
+    "page": "-p",
+    "page_size": "--page-size",
+    "workers": "-w",
+    "limit": "--limit",
+    "language": "--language",
+}
 
-def main():
-    from crawler_dm import goto
-    from crawler_comment import crawl_comments
-    from crawler_info import crawl_video_info
-    from crawler_subtitle import crawl_subtitles
 
-    parser = argparse.ArgumentParser(description="下载 Bilibili 视频数据")
+def parse_page_range(value):
+    """把 START 或 START,END 转换成包含首尾的整数范围。"""
+    parts = value.split(",")
+
+    if len(parts) > 2:
+        raise argparse.ArgumentTypeError("范围格式应为 START,END")
+
+    try:
+        start = int(parts[0])
+        end = int(parts[1]) if len(parts) == 2 else start
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("页码范围必须是整数") from exc
+
+    if start < 1 or end < start:
+        raise argparse.ArgumentTypeError("页码必须满足 1 <= START <= END")
+
+    return start, end
+
+
+def build_parser():
+    """创建 bilibili 命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="bilibili",
+        description="下载 Bilibili 视频信息、评论、字幕、弹幕和搜索结果",
+    )
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument(
+        "-l",
+        "--login",
+        action="store_true",
+        help="确认登录状态，失效时重新登录",
+    )
+    actions.add_argument(
+        "-i",
+        "--info",
+        action="store_true",
+        help="采集视频信息",
+    )
+    actions.add_argument(
+        "-c",
+        "--comments",
+        action="store_true",
+        help="采集一级评论",
+    )
+    actions.add_argument(
+        "-s",
+        "--subtitles",
+        action="store_true",
+        help="采集字幕",
+    )
+    actions.add_argument(
+        "-d",
+        "--danmaku",
+        action="store_true",
+        help="采集弹幕",
+    )
+    actions.add_argument(
+        "-a",
+        "--all",
+        action="store_true",
+        help="依次采集信息、评论、字幕和弹幕",
+    )
+    actions.add_argument(
+        "-k",
+        "--keyword",
+        dest="keyword",
+        metavar="关键词",
+        help="按关键词搜索视频",
+    )
+    actions.add_argument(
+        "-H",
+        "--hot-search",
+        action="store_true",
+        help="对热搜词逐个执行视频搜索",
+    )
     parser.add_argument(
         "bvid",
         nargs="?",
-        default=DEFAULT_BVID,
+        default=None,
         help="视频 BV 号，不填写时使用 DEFAULT_BVID",
     )
     parser.add_argument(
-        "--info",
-        action="store_true",
-        help="只采集视频信息",
+        "-p",
+        dest="page",
+        type=parse_page_range,
+        metavar="START,END",
+        default=None,
+        help="字幕、弹幕或关键词搜索页范围，不适用于热搜",
     )
     parser.add_argument(
-        "--comments",
-        action="store_true",
-        help="只采集一级评论",
-    )
-    parser.add_argument(
-        "--subtitles",
-        action="store_true",
-        help="只采集字幕",
-    )
-    parser.add_argument(
-        "--danmaku",
-        action="store_true",
-        help="只采集弹幕",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="依次执行全部功能",
-    )
-    parser.add_argument(
-        "--subtitle-page",
+        "--page-size",
         type=int,
         default=None,
-        help="只采集指定字幕分 P",
+        help="搜索结果每页数量，默认 20，最大 50",
     )
     parser.add_argument(
-        "--subtitle-language",
-        default=None,
-        help="只采集指定语言，例如 zh-CN 或 ai-zh",
-    )
-    parser.add_argument(
-        "--danmaku-page",
+        "-w",
+        dest="workers",
         type=int,
         default=None,
-        help="只采集指定弹幕分 P",
+        help="搜索并发线程数，默认 3，最大 5",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="参与搜索的热搜数量，默认 10，最大 50",
+    )
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="字幕语言，例如 zh-CN 或 ai-zh",
+    )
+    return parser
 
-    selected = {
-        "info": args.info,
-        "comments": args.comments,
-        "subtitles": args.subtitles,
-        "danmaku": args.danmaku,
-    }
 
-    if args.all:
-        selected = {name: True for name in selected}
+def reject_unused_options(parser, args, allowed):
+    """拒绝当前操作不支持的参数，避免参数被静默忽略。"""
+    if args.bvid is not None and "bvid" not in allowed:
+        parser.error("BVID 不能与当前操作一起使用")
 
-    if not any(selected.values()):
-        parser.error("请至少选择一个功能：--info、--comments、--subtitles、--danmaku 或 --all")
+    for name, flag in OPTION_FLAGS.items():
+        value = getattr(args, name)
 
-    print("视频：", args.bvid)
+        if value is not None and name not in allowed:
+            parser.error(f"{flag} 不能与当前操作一起使用")
 
-    ensure_login()
 
-    if selected["info"]:
-        crawl_video_info(args.bvid)
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
-    if selected["comments"]:
-        crawl_comments(args.bvid)
+    if args.login:
+        reject_unused_options(parser, args, set())
+        ensure_login()
+        return
 
-    if selected["subtitles"]:
-        crawl_subtitles(
-            args.bvid,
-            page_number=args.subtitle_page,
-            language=args.subtitle_language,
+    bvid = args.bvid or DEFAULT_BVID
+
+    if args.keyword is not None:
+        reject_unused_options(
+            parser,
+            args,
+            {"page", "page_size", "workers"},
         )
 
-    if selected["danmaku"]:
-        goto(args.bvid, page_number=args.danmaku_page)
+        if not args.keyword.strip():
+            parser.error("搜索关键词不能为空")
+
+        from crawler_search import crawl_search
+
+        page_start, page_end = args.page or (1, 1)
+        ensure_login()
+        crawl_search(
+            args.keyword,
+            page=page_start,
+            pages=page_end - page_start + 1,
+            page_size=args.page_size or 20,
+            workers=args.workers or 3,
+        )
+        return
+
+    if args.hot_search:
+        reject_unused_options(
+            parser,
+            args,
+            {"page_size", "workers", "limit"},
+        )
+
+        from crawler_search import crawl_hot_search
+
+        ensure_login()
+        crawl_hot_search(
+            limit=args.limit or 10,
+            page=1,
+            pages=1,
+            page_size=args.page_size or 20,
+            workers=args.workers or 3,
+        )
+        return
+
+    if args.subtitles:
+        reject_unused_options(parser, args, {"bvid", "page", "language"})
+    elif args.danmaku:
+        reject_unused_options(parser, args, {"bvid", "page"})
+    else:
+        reject_unused_options(parser, args, {"bvid"})
+
+    from crawler_comment import crawl_comments
+    from crawler_dm import goto
+    from crawler_info import crawl_video_info
+    from crawler_subtitle import crawl_subtitles
+
+    print("视频：", bvid)
+    ensure_login()
+
+    if args.info:
+        crawl_video_info(bvid)
+    elif args.comments:
+        crawl_comments(bvid)
+    elif args.subtitles:
+        crawl_subtitles(
+            bvid,
+            page_range=args.page,
+            language=args.language,
+        )
+    elif args.danmaku:
+        goto(bvid, page_range=args.page)
+    elif args.all:
+        crawl_video_info(bvid)
+        crawl_comments(bvid)
+        crawl_subtitles(bvid)
+        goto(bvid)
 
 
 if __name__ == "__main__":

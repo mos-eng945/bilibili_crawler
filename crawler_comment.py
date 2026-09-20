@@ -8,13 +8,13 @@ import time
 
 from bilibili_api import (
     get_cookie_header,
+    get_video_dir,
     get_video_info,
     get_wbi_mixin_key,
     request_wbi_json,
 )
 from login import ensure_login
 from main import DEFAULT_BVID
-from video_paths import get_video_dir
 
 COMMENT_COLUMNS = [
     "rpid",
@@ -34,6 +34,7 @@ COMMENT_WEB_LOCATION = 1315875
 COMMENT_PROGRESS_PAGE_INTERVAL = 10
 COMMENT_RETRY_ATTEMPTS = 3
 COMMENT_RETRY_DELAY_SECONDS = 1
+COMMENT_CHECKPOINT_VERSION = 1
 
 
 def parse_image_urls(content):
@@ -123,6 +124,8 @@ def request_comment_page_with_retry(oid, page_cursor, cookie, mixin_key):
 
             time.sleep(COMMENT_RETRY_DELAY_SECONDS)
 
+    raise RuntimeError("请求评论页失败")
+
 
 def extract_page_comments(data, include_top=False):
     """提取当前页的一级评论并转换成轻量记录。"""
@@ -135,11 +138,91 @@ def extract_page_comments(data, include_top=False):
     return [parse_comment(comment) for comment in replies]
 
 
+def read_comment_rows(path):
+    """读取已经保存的评论 CSV。"""
+    if not path.exists():
+        return []
+
+    with open(path, "r", newline="", encoding="utf-8-sig") as file:
+        return list(csv.DictReader(file))
+
+
+def append_comment_rows(path, rows):
+    """把新评论追加到 CSV，并在新文件时写入表头。"""
+    write_header = not path.exists() or path.stat().st_size == 0
+
+    with open(path, "a", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=COMMENT_COLUMNS)
+
+        if write_header:
+            writer.writeheader()
+
+        if rows:
+            writer.writerows(rows)
+
+
+def write_comment_rows(path, rows):
+    """合并并重新写入评论 CSV。"""
+    temp_path = path.with_name(f"{path.name}.tmp")
+
+    with open(temp_path, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=COMMENT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    temp_path.replace(path)
+
+
+def merge_comment_rows(rows):
+    """按 rpid 去重，并按发布时间从新到旧排列。"""
+    merged = []
+    seen = set()
+
+    for row in rows:
+        rpid = str(row.get("rpid") or "")
+
+        if not rpid or rpid in seen:
+            continue
+
+        seen.add(rpid)
+        merged.append(row)
+
+    merged.sort(
+        key=lambda row: int(row.get("ctime") or 0),
+        reverse=True,
+    )
+    return merged
+
+
+def load_comment_checkpoint(path):
+    """读取评论采集断点，内容无效时返回空字典。"""
+    if not path.exists():
+        return {}
+
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if checkpoint.get("version") != COMMENT_CHECKPOINT_VERSION:
+        return {}
+
+    return checkpoint
+
+
+def save_comment_checkpoint(path, checkpoint):
+    """原子写入评论采集断点。"""
+    temp_path = path.with_name(f"{path.name}.tmp")
+    content = json.dumps(checkpoint, ensure_ascii=False, indent=2)
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)
+
+
 def crawl_comments(
     bvid=DEFAULT_BVID,
     workers=None,
 ):
-    """采集视频的全部一级评论并保存为 CSV。"""
+    """增量或断点采集视频的一级评论并保存为 CSV。"""
     if workers is not None:
         print("游标分页需要顺序请求，workers 参数不再生效")
 
@@ -151,11 +234,49 @@ def crawl_comments(
         raise RuntimeError(f"视频 {bvid} 没有返回 aid")
 
     mixin_key = get_wbi_mixin_key(cookie)
-    comments = []
-    seen_rpids = set()
-    page_cursor = {}
-    page_number = 0
-    total_reply_count = 0
+    video_dir = get_video_dir(video_info)
+    video_dir.mkdir(parents=True, exist_ok=True)
+    output_path = video_dir / f"comments_{bvid}.csv"
+    checkpoint_path = video_dir / f"comments_{bvid}.checkpoint.json"
+    existing_rows = read_comment_rows(output_path)
+    checkpoint = load_comment_checkpoint(checkpoint_path)
+    resumed = bool(checkpoint and existing_rows)
+
+    if resumed:
+        page_cursor = {
+            "next": checkpoint.get("next", 0),
+            "offset": checkpoint.get("offset", ""),
+        }
+        page_number = int(checkpoint.get("page", 0))
+        total_reply_count = int(checkpoint.get("total_reply_count", 0))
+        incremental = bool(checkpoint.get("incremental"))
+        print(
+            f"检测到断点，从第 {page_number + 1} 页继续，"
+            f"当前已保存 {len(existing_rows)} 条一级评论"
+        )
+    else:
+        checkpoint_path.unlink(missing_ok=True)
+        page_cursor = {}
+        page_number = 0
+        total_reply_count = 0
+        incremental = bool(existing_rows)
+
+    seen_rpids = {
+        str(row.get("rpid") or "")
+        for row in existing_rows
+        if row.get("rpid")
+    }
+
+    if resumed:
+        print(
+            f"继续{'增量' if incremental else '全量'}采集："
+            f"{output_path}"
+        )
+    elif incremental:
+        print(f"检测到已有评论，执行增量采集：{output_path}")
+    else:
+        print(f"未发现完整记录，执行全量采集：{output_path}")
+
     print("开始采集评论，使用 WBI 游标分页")
 
     while True:
@@ -170,15 +291,23 @@ def crawl_comments(
             data,
             include_top=page_number == 1,
         )
+        new_rows = []
 
         for comment in page_comments:
-            rpid = comment["rpid"]
+            rpid = str(comment["rpid"] or "")
 
-            if rpid in seen_rpids:
+            if not rpid or rpid in seen_rpids:
                 continue
 
             seen_rpids.add(rpid)
-            comments.append(comment)
+            new_rows.append(
+                {
+                    **comment,
+                    "image_urls": "|".join(comment["image_urls"]),
+                }
+            )
+
+        append_comment_rows(output_path, new_rows)
 
         cursor = data.get("cursor") or {}
         total_reply_count = cursor.get("all_count") or total_reply_count
@@ -186,19 +315,35 @@ def crawl_comments(
         next_offset = (
             cursor.get("pagination_reply") or {}
         ).get("next_offset")
+        reached_existing = incremental and bool(page_comments) and not new_rows
+
+        save_comment_checkpoint(
+            checkpoint_path,
+            {
+                "version": COMMENT_CHECKPOINT_VERSION,
+                "bvid": bvid,
+                "page": page_number,
+                "next": cursor.get("next", 0),
+                "offset": next_offset or "",
+                "total_reply_count": total_reply_count,
+                "incremental": incremental,
+            },
+        )
 
         if (
             page_number == 1
             or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
             or is_end
+            or reached_existing
         ):
             print(
                 f"已获取第 {page_number} 页，"
-                f"一级评论 {len(comments)} 条；"
+                f"新增 {len(new_rows)} 条，"
+                f"累计 {len(seen_rpids)} 条；"
                 f"视频总评论 {total_reply_count} 条（含子评论）"
             )
 
-        if is_end or not next_offset:
+        if is_end or not next_offset or reached_existing:
             break
 
         page_cursor = {
@@ -206,24 +351,18 @@ def crawl_comments(
             "offset": next_offset,
         }
 
-    video_dir = get_video_dir(video_info)
-    video_dir.mkdir(parents=True, exist_ok=True)
-    output_path = video_dir / f"comments_{bvid}.csv"
+    if incremental:
+        write_comment_rows(
+            output_path,
+            merge_comment_rows(read_comment_rows(output_path)),
+        )
 
-    with open(output_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=COMMENT_COLUMNS)
-        writer.writeheader()
-
-        for comment in comments:
-            row = {
-                **comment,
-                "image_urls": "|".join(comment["image_urls"]),
-            }
-            writer.writerow(row)
+    checkpoint_path.unlink(missing_ok=True)
+    saved_count = len(read_comment_rows(output_path))
 
     print(
         f"评论已保存：{output_path}，"
-        f"共 {len(comments)} 条一级评论；"
+        f"共 {saved_count} 条一级评论；"
         f"视频总评论 {total_reply_count} 条（含子评论）"
     )
     return output_path
