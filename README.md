@@ -48,19 +48,15 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 pip install -e .
 ```
 
-`requirements.txt` 包含：
+依赖统一声明在 `pyproject.toml`。需要重新编译 `dm.proto` 时，
+再安装开发依赖：
 
-```text
-playwright
-protobuf>=6.31.1,<7
-grpcio-tools
+```powershell
+pip install -e ".[dev]"
 ```
-
-`grpcio-tools` 只在重新编译 `dm.proto` 时需要使用。
 
 ## 运行
 
@@ -253,14 +249,10 @@ comments_{BV号}.csv
 
 重复运行同一个视频时，程序会先读取已有 CSV。如果第一页已经没有新评论，
 就停止采集；如果出现新评论，则继续翻页直到重新到达旧数据边界。采集过程
-会逐页写入 CSV，并生成临时文件：
+会逐页写入 CSV。
 
-```text
-comments_{BV号}.checkpoint.json
-```
-
-如果任务中途失败，下次运行会从该断点继续；完成后断点文件会自动删除。
-需要重新完整采集时，删除对应的评论 CSV 和断点文件即可。
+如果任务中途失败，下次运行会重新从第一页开始增量检查。
+需要重新完整采集时，删除对应的评论 CSV 即可。
 
 CSV 列如下：
 

@@ -141,19 +141,15 @@ w_rid=基于排序参数和 mixin_key 计算的 MD5
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 pip install -e .
 ```
 
-`requirements.txt` 包含：
+依赖统一声明在 `pyproject.toml`。需要重新编译 `dm.proto` 时，
+再安装开发依赖：
 
-```text
-playwright
-protobuf>=6.31.1,<7
-grpcio-tools
+```powershell
+pip install -e ".[dev]"
 ```
-
-`grpcio-tools` 只在重新编译 `dm.proto` 时需要使用。
 
 ## 快速开始
 
@@ -242,8 +238,7 @@ bilibili -k "Python" -p 2,4
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
-| `requirements.txt` | Python 依赖 |
-| `pyproject.toml` | 安装 `bilibili` 命令入口 |
+| `pyproject.toml` | Python 依赖和 `bilibili` 命令入口 |
 | `bilibili_state.json` | Playwright 登录状态，属于敏感文件 |
 
 ## 执行流程
@@ -477,8 +472,7 @@ Bilibili JSON 接口通常返回：
 
 采集循环会结合 `is_end` 和 `next_offset` 判断是否结束，并按照 `rpid` 去重。
 已有评论 CSV 时，采集会从第一页开始增量检查；连续到达旧评论边界后停止。
-如果任务中断，`comments_{BV号}.checkpoint.json` 会保存当前游标，下次运行
-从断点继续。
+任务中断后再次运行，会重新从第一页开始增量检查。
 
 ### 评论对象类型
 
@@ -567,8 +561,7 @@ CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` �
 `|` 连接多个图片地址。
 
 `crawl_comments(bvid=DEFAULT_BVID, workers=None)` 返回 CSV 的完整路径。
-采集过程中会逐页追加结果，并原子更新
-`comments_{BV号}.checkpoint.json`；任务完成后断点文件会删除。
+采集过程中会逐页追加结果。
 `workers` 仅用于兼容旧调用，当前游标分页必须顺序请求，因此传入时不生效。
 
 ## 视频搜索

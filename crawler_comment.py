@@ -34,7 +34,6 @@ COMMENT_WEB_LOCATION = 1315875
 COMMENT_PROGRESS_PAGE_INTERVAL = 10
 COMMENT_RETRY_ATTEMPTS = 3
 COMMENT_RETRY_DELAY_SECONDS = 1
-COMMENT_CHECKPOINT_VERSION = 1
 
 
 def parse_image_urls(content):
@@ -194,35 +193,11 @@ def merge_comment_rows(rows):
     return merged
 
 
-def load_comment_checkpoint(path):
-    """读取评论采集断点，内容无效时返回空字典。"""
-    if not path.exists():
-        return {}
-
-    try:
-        checkpoint = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    if checkpoint.get("version") != COMMENT_CHECKPOINT_VERSION:
-        return {}
-
-    return checkpoint
-
-
-def save_comment_checkpoint(path, checkpoint):
-    """原子写入评论采集断点。"""
-    temp_path = path.with_name(f"{path.name}.tmp")
-    content = json.dumps(checkpoint, ensure_ascii=False, indent=2)
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
-
-
 def crawl_comments(
     bvid=DEFAULT_BVID,
     workers=None,
 ):
-    """增量或断点采集视频的一级评论并保存为 CSV。"""
+    """增量采集视频的一级评论并保存为 CSV。"""
     if workers is not None:
         print("游标分页需要顺序请求，workers 参数不再生效")
 
@@ -237,29 +212,11 @@ def crawl_comments(
     video_dir = get_video_dir(video_info)
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = video_dir / f"comments_{bvid}.csv"
-    checkpoint_path = video_dir / f"comments_{bvid}.checkpoint.json"
     existing_rows = read_comment_rows(output_path)
-    checkpoint = load_comment_checkpoint(checkpoint_path)
-    resumed = bool(checkpoint and existing_rows)
-
-    if resumed:
-        page_cursor = {
-            "next": checkpoint.get("next", 0),
-            "offset": checkpoint.get("offset", ""),
-        }
-        page_number = int(checkpoint.get("page", 0))
-        total_reply_count = int(checkpoint.get("total_reply_count", 0))
-        incremental = bool(checkpoint.get("incremental"))
-        print(
-            f"检测到断点，从第 {page_number + 1} 页继续，"
-            f"当前已保存 {len(existing_rows)} 条一级评论"
-        )
-    else:
-        checkpoint_path.unlink(missing_ok=True)
-        page_cursor = {}
-        page_number = 0
-        total_reply_count = 0
-        incremental = bool(existing_rows)
+    page_cursor = {}
+    page_number = 0
+    total_reply_count = 0
+    incremental = bool(existing_rows)
 
     seen_rpids = {
         str(row.get("rpid") or "")
@@ -267,12 +224,7 @@ def crawl_comments(
         if row.get("rpid")
     }
 
-    if resumed:
-        print(
-            f"继续{'增量' if incremental else '全量'}采集："
-            f"{output_path}"
-        )
-    elif incremental:
+    if incremental:
         print(f"检测到已有评论，执行增量采集：{output_path}")
     else:
         print(f"未发现完整记录，执行全量采集：{output_path}")
@@ -317,19 +269,6 @@ def crawl_comments(
         ).get("next_offset")
         reached_existing = incremental and bool(page_comments) and not new_rows
 
-        save_comment_checkpoint(
-            checkpoint_path,
-            {
-                "version": COMMENT_CHECKPOINT_VERSION,
-                "bvid": bvid,
-                "page": page_number,
-                "next": cursor.get("next", 0),
-                "offset": next_offset or "",
-                "total_reply_count": total_reply_count,
-                "incremental": incremental,
-            },
-        )
-
         if (
             page_number == 1
             or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
@@ -357,7 +296,6 @@ def crawl_comments(
             merge_comment_rows(read_comment_rows(output_path)),
         )
 
-    checkpoint_path.unlink(missing_ok=True)
     saved_count = len(read_comment_rows(output_path))
 
     print(
