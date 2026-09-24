@@ -7,10 +7,12 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 from bilibili_api import get_up_follower_count, get_video_info
 
+T = TypeVar("T")
 
 SEARCH_DEFAULT_WORKERS = 3
 SEARCH_MAX_WORKERS = 10
@@ -50,7 +52,11 @@ def format_published_at(timestamp):
         return ""
 
 
-def request_with_retry(function, *args, **kwargs):
+def request_with_retry(
+    function: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T:
     """请求失败时短暂等待并重试。"""
     for attempt in range(1, SEARCH_RETRY_ATTEMPTS + 1):
         try:
@@ -60,6 +66,8 @@ def request_with_retry(function, *args, **kwargs):
                 raise
 
             time.sleep(SEARCH_RETRY_DELAY_SECONDS * attempt)
+
+    raise RuntimeError("请求重试失败")
 
 
 def build_video_row(

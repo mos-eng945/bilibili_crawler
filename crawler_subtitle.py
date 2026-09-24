@@ -96,6 +96,9 @@ def save_subtitle(
     json_path = video_dir / f"{base_name}.json"
     srt_path = video_dir / f"{base_name}.srt"
 
+    # cid 标识当前分 P 的播放内容；同一视频的不同分 P 使用不同 cid,公用一个bvid。
+    # page 和 part 用于阅读，language 是轨道代码，language_name 仅用于展示。
+    # 原始字幕正文位于 subtitle["body"]，后续可据此重建 SRT。
     payload = {
         "bvid": bvid,
         "cid": cid,

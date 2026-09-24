@@ -1,7 +1,8 @@
 # Bilibili 采集项目说明
 
-本项目使用 Python、Bilibili Web 接口和 Playwright，采集视频公开信息、一级
-评论、软字幕、弹幕和搜索结果，并把数据保存为 JSON 或 CSV。
+本项目使用 Python、Bilibili Web 接口、Playwright 和 PySide6，采集视频公开
+信息、一级评论、软字幕、弹幕、搜索结果及 UP 主公开视频，并把数据保存为
+JSON 或 CSV。项目同时提供命令行和 Qt 图形界面。
 
 本项目调用的是 Bilibili Web 端接口，不是官方开放平台 API。接口地址、字段、
 访问限制和风控策略都可能随网站更新而变化。
@@ -35,8 +36,10 @@
 项目适合以下场景：
 
 - 学习和调试验证 Bilibili Web 接口、WBI 签名、Cookie 和 Playwright。
-- 保存指定视频的公开信息、一级评论、软字幕和弹幕。
-- 按关键词或热搜词搜索视频，并整理互动数据。
+- 保存指定视频的公开信息、一级评论(没办法啊子评论工作量太大了)、软字幕和弹幕。
+- 按关键词或热搜词搜索。
+- 按 UP 主 MID 采集其全部公开视频，并补充互动数据。
+- 使用图形界面配置任务、查看运行日志和预览输出数据。
 - 为内容分析、选题研究或个人数据存档提供基础数据。
 
 项目不负责以下内容：
@@ -54,6 +57,7 @@
 | 一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `comments_{BV号}.csv` |
 | 视频搜索 | [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=被骗的小曲&page=1&page_size=20) | `search_{时间}_{数据量}.csv` |
 | 热搜搜索 | [`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10) | `hot_list.csv` 和搜索 CSV |
+| UP 主公开视频 | [`/x/space/wbi/arc/search`](https://api.bilibili.com/x/space/wbi/arc/search?mid=486906719&pn=1&ps=30&order=pubdate) | `videos_{时间}_{数据量}.csv` |
 | 软字幕 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | JSON、SRT |
 | 弹幕 | [播放器 `/seg.so` 请求](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `danmaku_{BV号}*.csv` |
 
@@ -83,6 +87,7 @@ https://api.bilibili.com
 | 获取 UP 主粉丝数 | [`/x/relation/stat`](https://api.bilibili.com/x/relation/stat?vmid=486906719) | `vmid` | 否 | `get_up_follower_count()` |
 | 获取热搜列表 | [`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10) | `limit` | 否 | `get_hot_search()` |
 | 搜索视频 | [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=被骗的小曲&page=1&page_size=20) | `search_type`、`keyword`、`page`、`page_size` | 是 | `search_videos()` |
+| 获取 UP 主公开视频 | [`/x/space/wbi/arc/search`](https://api.bilibili.com/x/space/wbi/arc/search?mid=486906719&pn=1&ps=30&order=pubdate) | `mid`、`pn`、`ps`、`order` | 是 | `get_user_videos()` |
 | 获取分 P 字幕轨道 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | `bvid`、`cid` | 是 | `get_player_subtitles()` |
 | 获取一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `oid`、`type`、`mode`、`next`、`pagination_str`、`ps` | 是 | `request_comment_page()` |
 | 获取弹幕分段 | [`/x/v2/dm/web/seg.so`](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `oid`、`type`、`segment_index` | 否 | `crawler_dm.py` 监听播放器响应 |
@@ -144,8 +149,14 @@ python -m venv .venv
 pip install -e .
 ```
 
-依赖统一声明在 `pyproject.toml`。需要重新编译 `dm.proto` 时，
-再安装开发依赖：
+依赖统一声明在 `pyproject.toml`。命令行功能安装基础依赖即可；图形界面
+还需要安装 PySide6：
+
+```powershell
+pip install -e ".[gui]"
+```
+
+需要重新编译 `dm.proto` 时，再安装开发依赖：
 
 ```powershell
 pip install -e ".[dev]"
@@ -153,7 +164,36 @@ pip install -e ".[dev]"
 
 ## 快速开始
 
-### 统一命令
+### 图形界面
+
+安装图形界面依赖后，可以使用统一命令启动：
+
+```powershell
+bilibili-gui
+```
+
+也可以直接运行兼容入口：
+
+```powershell
+python qt_app.py
+```
+
+图形界面包含五个工作区：
+
+| 工作区 | 作用 |
+| --- | --- |
+| 视频采集 | 采集视频概览、评论、字幕或弹幕，也可以执行全部采集 |
+| 关键词搜索 | 按关键词和页码范围搜索视频 |
+| UP 主视频 | 按 UP 主 MID 采集全部公开视频 |
+| 热搜搜索 | 获取热搜词并逐个执行视频搜索 |
+| 运行日志 | 查看任务输出、清空日志或停止当前任务 |
+
+界面会实时显示运行状态、登录状态和数据文件数量。每个任务面板都提供参数
+摘要、可选命令行预览、结果目录入口和数据查看入口。任务执行期间一次只能
+运行一个采集任务；任务完成后可以直接查看 CSV/JSON 数据。登录失效时，
+界面会提示前往 Chrome 完成登录。
+
+### 命令行
 
 安装后所有命令都以 `bilibili` 开头。每次必须选择一个操作：
 
@@ -173,9 +213,9 @@ pip install -e ".[dev]"
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-p` | 无 | 字幕、弹幕或关键词搜索页范围，不用于热搜 |
-| `--page-size` | `20` | 搜索结果每页数量，限制在 `1` 到 `50` |
-| `-w` | `3` | 搜索并发线程数，限制在 `1` 到 `10` |
+| `-p` | 无 | 字幕、弹幕或关键词搜索页范围，不用于 UP 主视频和热搜 |
+| `--page-size` | `20` / `30` | 关键词和热搜搜索默认 `20`，UP 主视频默认 `30`；最大 `50` |
+| `-w` | `3` | 搜索和 UP 主视频并发线程数，限制在 `1` 到 `10` |
 | `--limit` | `10` | 参与搜索的热搜词数量，最大 `50` |
 | `--language` | 无 | 字幕语言，例如 `zh-CN` 或 `ai-zh` |
 
@@ -213,6 +253,9 @@ bilibili -k "Python 教程"
 # 采集搜索结果的第 2-4 页
 bilibili -k "Python 教程" -p 2,4
 
+# 采集 UP 主全部公开视频
+bilibili -m 267068018 --page-size 30 -w 3
+
 # 搜索热度最高的 20 个热搜词
 bilibili -H --limit 20
 ```
@@ -224,6 +267,9 @@ bilibili -k "Python" -p 2,4
 ```
 
 实际采集的是第 `2`、`3`、`4` 页，不会自动补第一页。
+
+不填写 BV 号时使用 `config.py` 中的 `DEFAULT_BVID`。当前值为
+`BV1UT42167xb`。
 
 ## 项目结构
 
@@ -243,7 +289,14 @@ bilibili -k "Python" -p 2,4
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
-| `pyproject.toml` | Python 依赖和 `bilibili` 命令入口 |
+| `qt_app.py` | Qt 图形界面的兼容启动入口 |
+| `qt_ui/app.py` | 创建 `QApplication` 并启动主窗口 |
+| `qt_ui/main_window.py` | 组织 GUI 工作区，并通过 `QProcess` 调用命令行入口 |
+| `qt_ui/dialogs.py` | 数据浏览、数据预览和任务完成弹窗 |
+| `qt_ui/formatting.py` | 字段名称、数字和时间格式转换 |
+| `qt_ui/theme.py` | Qt 全局样式 |
+| `assets/` | 图形界面使用的图标和图片资源 |
+| `pyproject.toml` | Python 依赖、`bilibili` 和 `bilibili-gui` 命令入口 |
 | `bilibili_state.json` | Playwright 登录状态，属于敏感文件 |
 
 ## 执行流程
@@ -256,15 +309,26 @@ bilibili -k "Python" -p 2,4
 4. 各爬虫根据视频接口返回的 `owner`、`title` 和 `bvid` 生成同一个视频目录。
 5. 结果写入视频目录，已有文件会被同名新文件覆盖。
 
-`-a` 等价于同时选择视频信息、评论、字幕和弹幕，不包含搜索和热搜搜索。
+`-a` 等价于同时选择视频信息、评论、字幕和弹幕，不包含搜索、UP 主视频和
+热搜搜索。
 
 ### 搜索采集
 
-关键词搜索和热搜搜索是独立分支：
+关键词搜索、UP 主视频和热搜搜索是独立分支：
 
 - 不能与 `-i`、`-c`、`-s`、`-d` 或 `-a` 同时使用。
-- `-k` 和 `-H` 也不能同时使用。
+- `-k`、`-m` 和 `-H` 不能同时使用。
 - 搜索结果保存到 `output/search/`，不放入视频目录。
+
+### 图形界面任务
+
+1. 图形界面校验输入参数，并生成对应的 `main.py` 参数列表。
+2. 使用当前 Python 解释器启动独立 `QProcess`，合并标准输出和错误输出。
+3. 将命令行输出实时写入运行日志；检测到需要登录时弹窗提示。
+4. 任务成功后刷新数据面板并显示保存位置，任务失败时保留退出码和日志。
+5. 运行期间锁定其他启动按钮，并允许用户终止当前任务。
+
+图形界面本身不重复实现采集逻辑，实际工作仍由同一个命令行入口执行。
 
 ## 登录状态
 

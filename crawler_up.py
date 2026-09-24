@@ -93,10 +93,17 @@ def fetch_user_video_items(
         page_size=page_size,
     )
 
+    if not isinstance(first_page, dict):
+        raise RuntimeError("UP 主视频接口返回格式异常")
+
     if first_page.get("is_risk"):
         raise RuntimeError("Bilibili 返回风控提示，请稍后重试")
 
-    page_info = first_page.get("page") or {}
+    page_info = first_page.get("page")
+
+    if not isinstance(page_info, dict):
+        page_info = {}
+
     total_results = int(page_info.get("count") or 0)
     total_pages = max(1, math.ceil(total_results / page_size))
     page_numbers = list(range(2, total_pages + 1))
@@ -125,10 +132,18 @@ def fetch_user_video_items(
     seen_bvids = set()
 
     for data in page_results:
+        if not isinstance(data, dict):
+            continue
+
         if data.get("is_risk"):
             raise RuntimeError("Bilibili 返回风控提示，请稍后重试")
 
-        for item in (data.get("list") or {}).get("vlist") or []:
+        list_data = data.get("list")
+
+        if not isinstance(list_data, dict):
+            continue
+
+        for item in list_data.get("vlist") or []:
             bvid = item.get("bvid", "")
 
             if not bvid or bvid in seen_bvids:
