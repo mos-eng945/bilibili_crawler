@@ -2,9 +2,8 @@
 
 import argparse
 
+from config import DEFAULT_BVID, parse_page_range
 from login import ensure_login
-
-DEFAULT_BVID = "BV1UT42167xb"
 
 OPTION_FLAGS = {
     "page": "-p",
@@ -14,31 +13,14 @@ OPTION_FLAGS = {
     "language": "--language",
 }
 
-
-def parse_page_range(value):
-    """把 START 或 START,END 转换成包含首尾的整数范围。"""
-    parts = value.split(",")
-
-    if len(parts) > 2:
-        raise argparse.ArgumentTypeError("范围格式应为 START,END")
-
-    try:
-        start = int(parts[0])
-        end = int(parts[1]) if len(parts) == 2 else start
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("页码范围必须是整数") from exc
-
-    if start < 1 or end < start:
-        raise argparse.ArgumentTypeError("页码必须满足 1 <= START <= END")
-
-    return start, end
-
-
 def build_parser():
     """创建 bilibili 命令行参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="bilibili",
-        description="下载 Bilibili 视频信息、评论、字幕、弹幕和搜索结果",
+        description=(
+            "下载 Bilibili 视频信息、评论、字幕、弹幕、搜索结果"
+            "和 UP 主全部视频"
+        ),
     )
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument(
@@ -85,6 +67,13 @@ def build_parser():
         help="按关键词搜索视频",
     )
     actions.add_argument(
+        "-m",
+        "--mid",
+        dest="mid",
+        metavar="MID",
+        help="采集指定 UP 主的全部公开视频",
+    )
+    actions.add_argument(
         "-H",
         "--hot-search",
         action="store_true",
@@ -108,14 +97,14 @@ def build_parser():
         "--page-size",
         type=int,
         default=None,
-        help="搜索结果每页数量，默认 20，最大 50",
+        help="搜索或 UP 主视频每页数量，最大 50",
     )
     parser.add_argument(
         "-w",
         dest="workers",
         type=int,
         default=None,
-        help="搜索并发线程数，默认 3，最大 5",
+        help="搜索并发线程数，默认 3，最大 10",
     )
     parser.add_argument(
         "--limit",
@@ -154,6 +143,26 @@ def main(argv=None):
 
     bvid = args.bvid or DEFAULT_BVID
 
+    if args.mid is not None:
+        reject_unused_options(
+            parser,
+            args,
+            {"page_size", "workers"},
+        )
+
+        if not args.mid.strip().isdigit() or int(args.mid) <= 0:
+            parser.error("UP 主 MID 必须是大于 0 的数字")
+
+        from crawler_up import crawl_user_videos
+
+        ensure_login()
+        crawl_user_videos(
+            args.mid,
+            page_size=args.page_size or 30,
+            workers=args.workers or 3,
+        )
+        return
+
     if args.keyword is not None:
         reject_unused_options(
             parser,
@@ -184,7 +193,7 @@ def main(argv=None):
             {"page_size", "workers", "limit"},
         )
 
-        from crawler_search import crawl_hot_search
+        from crawler_hot import crawl_hot_search
 
         ensure_login()
         crawl_hot_search(

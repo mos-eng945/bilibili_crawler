@@ -43,7 +43,7 @@
 
 - 不下载视频或音频文件。
 - 不采集付费、充电专属、地区限制或无权访问的内容。
-- 不提供持续监控或定时任务；重复运行时评论采集会自动增量更新。
+- 不提供持续监控或定时任务；重复运行时评论采集会重新完整采集。
 - 不保证采集结果完整，所有数据都是请求时的快照。
 
 ## 功能范围
@@ -166,6 +166,7 @@ pip install -e ".[dev]"
 | `-d` | `--danmaku` | 采集弹幕 |
 | `-a` | `--all` | 依次采集信息、评论、字幕和弹幕 |
 | `-k` | `--keyword` | 按关键词搜索视频 |
+| `-m` | `--mid` | 采集指定 UP 主的全部公开视频 |
 | `-H` | `--hot-search` | 遍历热搜词搜索视频 |
 
 通用参数：
@@ -174,7 +175,7 @@ pip install -e ".[dev]"
 | --- | --- | --- |
 | `-p` | 无 | 字幕、弹幕或关键词搜索页范围，不用于热搜 |
 | `--page-size` | `20` | 搜索结果每页数量，限制在 `1` 到 `50` |
-| `-w` | `3` | 搜索并发线程数，限制在 `1` 到 `5` |
+| `-w` | `3` | 搜索并发线程数，限制在 `1` 到 `10` |
 | `--limit` | `10` | 参与搜索的热搜词数量，最大 `50` |
 | `--language` | 无 | 字幕语言，例如 `zh-CN` 或 `ai-zh` |
 
@@ -228,12 +229,16 @@ bilibili -k "Python" -p 2,4
 
 | 文件 | 作用 |
 | --- | --- |
+| `config.py` | 默认 BVID、页码范围等公共配置和参数解析 |
 | `main.py` | 命令行入口，负责参数校验和功能分发 |
 | `login.py` | 保存、检查和刷新登录状态 |
 | `bilibili_api.py` | HTTP 请求、WBI 签名、视频接口、搜索接口、输出路径 |
 | `crawler_info.py` | 保存视频信息和 UP 主粉丝数 |
 | `crawler_comment.py` | 使用 WBI 游标采集一级评论 |
-| `crawler_search.py` | 关键词搜索和热搜批量搜索 |
+| `crawler_search.py` | 关键词视频搜索 |
+| `crawler_hot.py` | 热搜批量视频搜索 |
+| `crawler_up.py` | UP 主全部公开视频 |
+| `crawler_common.py` | 爬虫共用的请求、并发、数据构建和文件输出 |
 | `crawler_subtitle.py` | 下载软字幕并转换 SRT |
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
@@ -471,8 +476,8 @@ Bilibili JSON 接口通常返回：
 | `ps=30` | 每页评论数量 |
 
 采集循环会结合 `is_end` 和 `next_offset` 判断是否结束，并按照 `rpid` 去重。
-已有评论 CSV 时，采集会从第一页开始增量检查；连续到达旧评论边界后停止。
-任务中断后再次运行，会重新从第一页开始增量检查。
+每次运行都会从第一页开始完整采集，去重排序后覆盖原有评论 CSV。
+任务中断后再次运行，同样会重新从第一页开始完整采集。
 
 ### 评论对象类型
 
@@ -566,7 +571,9 @@ CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` �
 
 ## 视频搜索
 
-`crawler_search.py` 支持关键词搜索和热搜批量搜索。
+关键词搜索位于 `crawler_search.py`，热搜搜索位于 `crawler_hot.py`，
+UP 主视频位于 `crawler_up.py`，公共请求与格式化逻辑位于
+`crawler_common.py`。
 
 ### 关键词搜索流程
 
@@ -619,6 +626,19 @@ CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` �
 
 普通视频搜索接口不提供视频级官方热度字段，因此搜索 CSV 不包含
 `heat_score`。热搜关键词的热度只写入 `hot_list.csv`。
+
+### UP 主全部视频
+
+`crawl_user_videos(mid, page_size=30, workers=3)` 通过 UP 主 `mid` 读取其
+公开视频列表。第一次请求取得总数后，剩余分页并发抓取，并按 `bvid` 去重。
+CSV 字段与关键词搜索一致，输出到：
+
+```text
+output/search/up/{MID}/videos_{时间}_{数据量}.csv
+```
+
+命令行使用 `bilibili -m MID`，可通过 `--page-size` 调整每页数量，最大为
+`50`，通过 `-w` 调整并发数量。
 
 ### 热搜搜索
 
@@ -826,6 +846,9 @@ output/
 output/search/
 ├── {关键词}/
 │   └── search_{时间}_{数据量}.csv
+├── up/
+│   └── {MID}/
+│       └── videos_{时间}_{数据量}.csv
 └── hot-search/
     └── {运行时间}/
         ├── hot_list.csv
@@ -841,8 +864,8 @@ output/search/
 | --- | --- |
 | `login.py` | 服务端确认 Cookie 失效时重新登录；网络异常时先按已登录处理 |
 | `crawler_comment.py` | 评论页请求最多重试三次，每次间隔一秒 |
-| `crawler_search.py` | 搜索请求最多重试三次，等待时间依次为 1 秒和 2 秒 |
-| `crawler_search.py` | 视频详情失败回退到搜索结果，粉丝数失败回退为 `0` |
+| `crawler_common.py` | 搜索请求最多重试三次，等待时间依次为 1 秒和 2 秒 |
+| `crawler_common.py` | 视频详情失败回退到搜索结果，粉丝数失败回退为 `0` |
 | `crawler_subtitle.py` | 单条字幕缺少 `subtitle_url` 时跳过 |
 | `crawler_dm.py` | 只处理状态正常的 `/seg.so` 响应 |
 

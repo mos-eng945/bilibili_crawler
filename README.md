@@ -16,6 +16,7 @@
 - 将字幕同时保存为 JSON 和 SRT 格式。
 - 通过 Playwright 监听播放器请求并采集弹幕。
 - 使用 Protobuf 解码弹幕，去重后保存为 CSV。
+- 通过 UP 主 MID 采集其全部公开视频并补充互动数据。
 - 自动处理单 P 和多 P 视频。
 - 复用 Playwright 登录状态，减少重复登录。
 
@@ -23,6 +24,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
+| `config.py` | 默认 BVID 和通用参数解析 |
 | `main.py` | `bilibili` 命令行入口和功能分发 |
 | `login.py` | 保存、检查和刷新 Bilibili 登录状态 |
 | `bilibili_api.py` | 公共接口请求、WBI 签名、输出路径和字幕接口 |
@@ -31,8 +33,18 @@
 | `crawler_subtitle.py` | 下载字幕 JSON 并转换 SRT |
 | `crawler_dm.py` | 使用 Playwright 采集弹幕 |
 | `crawler_search.py` | 按关键词搜索视频并保存 CSV |
+| `crawler_hot.py` | 遍历热搜词搜索视频 |
+| `crawler_up.py` | 按 MID 采集 UP 主全部公开视频 |
+| `crawler_common.py` | 爬虫共用的请求、并发、数据构建和文件输出 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
+| `qt_app.py` | Qt 图形界面的兼容启动入口 |
+| `qt_ui/app.py` | 创建 `QApplication` 并启动主窗口 |
+| `qt_ui/main_window.py` | 主窗口、页面布局和爬虫任务控制 |
+| `qt_ui/dialogs.py` | 表格预览和目录浏览弹窗 |
+| `qt_ui/formatting.py` | 字段名称、数字和时间格式转换 |
+| `qt_ui/theme.py` | Qt 全局样式 |
+| `assets/` | 图形界面使用的图片资源 |
 
 ## 环境要求
 
@@ -56,6 +68,24 @@ pip install -e .
 
 ```powershell
 pip install -e ".[dev]"
+```
+
+安装 Qt 图形界面依赖：
+
+```powershell
+pip install -e ".[gui]"
+```
+
+启动图形界面：
+
+```powershell
+bilibili-gui
+```
+
+也可以直接运行：
+
+```powershell
+python qt_app.py
 ```
 
 ## 运行
@@ -111,6 +141,18 @@ bilibili -d BV1V3Yn6wENr -p 1,3
 bilibili -k "Python 教程"
 ```
 
+通过 UP 主 MID 采集全部公开视频：
+
+```powershell
+bilibili -m 267068018
+```
+
+指定每次读取数量和并发线程数：
+
+```powershell
+bilibili -m 267068018 --page-size 50 -w 3
+```
+
 指定搜索页码范围、每页数量和并发线程数：
 
 ```powershell
@@ -135,7 +177,7 @@ bilibili -H --limit 20
 bilibili -a BV1V3Yn6wENr
 ```
 
-不填写 BV 号时，使用 `main.py` 中的 `DEFAULT_BVID`：
+不填写 BV 号时，使用 `config.py` 中的 `DEFAULT_BVID`：
 
 ```powershell
 bilibili -i
@@ -197,6 +239,12 @@ danmaku_{BV号}_p2.csv
 output/search/{关键词}/search_{时间}_{数据量}.csv
 ```
 
+UP 主视频保存在：
+
+```text
+output/search/up/{MID}/videos_{时间}_{数据量}.csv
+```
+
 热搜搜索会按运行时间创建目录，并把每个热搜词的结果保存到对应子目录：
 
 ```text
@@ -247,12 +295,8 @@ comments_{BV号}.csv
 接口返回的 `all_count` 是视频总评论数，包含一级评论下面的子评论；CSV
 实际保存的行数是一级评论数。
 
-重复运行同一个视频时，程序会先读取已有 CSV。如果第一页已经没有新评论，
-就停止采集；如果出现新评论，则继续翻页直到重新到达旧数据边界。采集过程
-会逐页写入 CSV。
-
-如果任务中途失败，下次运行会重新从第一页开始增量检查。
-需要重新完整采集时，删除对应的评论 CSV 即可。
+每次运行都会从第一页开始完整采集当前可见的一级评论，并在成功后覆盖原有
+CSV。任务中途失败时不会使用已有文件续传，下次运行会重新完整采集。
 
 CSV 列如下：
 

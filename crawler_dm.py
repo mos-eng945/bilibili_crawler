@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright
 import dm_pb2
 from bilibili_api import get_cookie_header, get_video_dir, get_video_info
 from login import STATE_FILE, ensure_login
-from main import DEFAULT_BVID
+from config import DEFAULT_BVID
 
 # 弹幕接口通常一次覆盖约 120 秒
 SEEK_STEP_SECONDS = 120

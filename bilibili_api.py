@@ -204,6 +204,39 @@ def search_videos(keyword, cookie, mixin_key, page=1, page_size=20):
     )
 
 
+def get_user_videos(
+    mid,
+    cookie,
+    mixin_key,
+    page=1,
+    page_size=30,
+    order="pubdate",
+):
+    """按 UP 主 MID 分页取得公开视频。"""
+    try:
+        mid = int(mid)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("UP 主 MID 必须是数字") from exc
+
+    if mid <= 0:
+        raise ValueError("UP 主 MID 必须大于 0")
+
+    page = max(1, int(page))
+    page_size = min(max(1, int(page_size)), 50)
+
+    return request_wbi_json(
+        "/x/space/wbi/arc/search",
+        {
+            "mid": mid,
+            "pn": page,
+            "ps": page_size,
+            "order": order,
+        },
+        cookie,
+        mixin_key,
+    )
+
+
 def get_hot_search(cookie, limit=10):
     """取得 Bilibili 搜索热搜列表。"""
     limit = min(max(1, int(limit)), 50)

@@ -21,8 +21,9 @@ from bilibili_api import (
     get_wbi_mixin_key,
     safe_filename,
 )
+from config import DEFAULT_BVID, parse_page_range
+from crawler_common import write_json
 from login import ensure_login
-from main import DEFAULT_BVID, parse_page_range
 
 
 def download_subtitle_json(url, cookie):
@@ -105,8 +106,7 @@ def save_subtitle(
         "subtitle": subtitle_data,
     }
 
-    with open(json_path, "w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
+    write_json(json_path, payload)
 
     with open(srt_path, "w", encoding="utf-8") as file:
         file.write(subtitle_to_srt(subtitle_data))
@@ -132,15 +132,11 @@ def crawl_subtitles(
     if page_range is not None:
         page_start, page_end = page_range
         pages = [
-            page
-            for page in pages
-            if page_start <= page.get("page", 0) <= page_end
+            page for page in pages if page_start <= page.get("page", 0) <= page_end
         ]
 
         if not pages:
-            raise RuntimeError(
-                f"视频 {bvid} 没有分 P {page_start}-{page_end}"
-            )
+            raise RuntimeError(f"视频 {bvid} 没有分 P {page_start}-{page_end}")
 
     downloaded = 0
 

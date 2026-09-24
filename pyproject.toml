@@ -16,19 +16,31 @@ dependencies = [
 dev = [
     "grpcio-tools",
 ]
+gui = [
+    "PySide6>=6.7",
+]
 
 [project.scripts]
 bilibili = "main:main"
+bilibili-gui = "qt_ui.app:main"
 
 [tool.setuptools]
+packages = [
+    "qt_ui",
+]
 py-modules = [
     "bilibili_api",
+    "config",
+    "crawler_common",
     "crawler_comment",
     "crawler_dm",
+    "crawler_hot",
     "crawler_info",
     "crawler_search",
     "crawler_subtitle",
+    "crawler_up",
     "dm_pb2",
     "login",
     "main",
+    "qt_app",
 ]

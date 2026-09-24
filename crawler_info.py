@@ -1,24 +1,14 @@
 """Bilibili 视频信息下载器。"""
 
-import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from bilibili_api import (
     get_cookie_header,
     get_up_follower_count,
     get_video_dir,
     get_video_info,
 )
+from config import DEFAULT_BVID
+from crawler_common import format_published_at, write_json
 from login import ensure_login
-from main import DEFAULT_BVID
-
-CHINA_TIMEZONE = ZoneInfo("Asia/Shanghai")
-
-
-def format_published_at(timestamp):
-    """把秒级时间戳转换成中国时区的 ISO 时间。"""
-    return datetime.fromtimestamp(timestamp, tz=CHINA_TIMEZONE).isoformat()
 
 
 def crawl_video_info(bvid=DEFAULT_BVID):
@@ -51,8 +41,7 @@ def crawl_video_info(bvid=DEFAULT_BVID):
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = video_dir / "video_info.json"
 
-    with open(output_path, "w", encoding="utf-8") as file:
-        json.dump(result, file, ensure_ascii=False, indent=2)
+    write_json(output_path, result)
 
     print(f"视频信息已保存：{output_path}")
     return output_path

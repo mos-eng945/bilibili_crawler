@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import io
 import json
 import re
 import time
@@ -13,8 +14,9 @@ from bilibili_api import (
     get_wbi_mixin_key,
     request_wbi_json,
 )
+from config import DEFAULT_BVID
+from crawler_common import write_csv
 from login import ensure_login
-from main import DEFAULT_BVID
 
 COMMENT_COLUMNS = [
     "rpid",
@@ -57,6 +59,7 @@ def parse_image_urls(content):
 def normalize_text(value):
     """把评论文本规范成适合 CSV 的单行内容。"""
     text = str(value or "")
+    text = text.replace("\x00", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r"\n+", r"\\n", text)
@@ -143,32 +146,20 @@ def read_comment_rows(path):
         return []
 
     with open(path, "r", newline="", encoding="utf-8-sig") as file:
-        return list(csv.DictReader(file))
+        content = file.read().replace("\x00", "")
+
+    return list(csv.DictReader(io.StringIO(content)))
 
 
 def append_comment_rows(path, rows):
     """把新评论追加到 CSV，并在新文件时写入表头。"""
-    write_header = not path.exists() or path.stat().st_size == 0
-
-    with open(path, "a", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=COMMENT_COLUMNS)
-
-        if write_header:
-            writer.writeheader()
-
-        if rows:
-            writer.writerows(rows)
+    write_csv(path, COMMENT_COLUMNS, rows, append=True)
 
 
 def write_comment_rows(path, rows):
     """合并并重新写入评论 CSV。"""
     temp_path = path.with_name(f"{path.name}.tmp")
-
-    with open(temp_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=COMMENT_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
-
+    write_csv(temp_path, COMMENT_COLUMNS, rows)
     temp_path.replace(path)
 
 
@@ -197,7 +188,7 @@ def crawl_comments(
     bvid=DEFAULT_BVID,
     workers=None,
 ):
-    """增量采集视频的一级评论并保存为 CSV。"""
+    """完整采集视频的一级评论并保存为 CSV。"""
     if workers is not None:
         print("游标分页需要顺序请求，workers 参数不再生效")
 
@@ -212,23 +203,13 @@ def crawl_comments(
     video_dir = get_video_dir(video_info)
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = video_dir / f"comments_{bvid}.csv"
-    existing_rows = read_comment_rows(output_path)
     page_cursor = {}
     page_number = 0
     total_reply_count = 0
-    incremental = bool(existing_rows)
+    collected_rows = []
+    seen_rpids = set()
 
-    seen_rpids = {
-        str(row.get("rpid") or "")
-        for row in existing_rows
-        if row.get("rpid")
-    }
-
-    if incremental:
-        print(f"检测到已有评论，执行增量采集：{output_path}")
-    else:
-        print(f"未发现完整记录，执行全量采集：{output_path}")
-
+    print(f"开始完整采集评论：{output_path}")
     print("开始采集评论，使用 WBI 游标分页")
 
     while True:
@@ -259,7 +240,7 @@ def crawl_comments(
                 }
             )
 
-        append_comment_rows(output_path, new_rows)
+        collected_rows.extend(new_rows)
 
         cursor = data.get("cursor") or {}
         total_reply_count = cursor.get("all_count") or total_reply_count
@@ -267,22 +248,20 @@ def crawl_comments(
         next_offset = (
             cursor.get("pagination_reply") or {}
         ).get("next_offset")
-        reached_existing = incremental and bool(page_comments) and not new_rows
 
         if (
             page_number == 1
             or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
             or is_end
-            or reached_existing
         ):
             print(
                 f"已获取第 {page_number} 页，"
-                f"新增 {len(new_rows)} 条，"
+                f"本页获取 {len(new_rows)} 条，"
                 f"累计 {len(seen_rpids)} 条；"
                 f"视频总评论 {total_reply_count} 条（含子评论）"
             )
 
-        if is_end or not next_offset or reached_existing:
+        if is_end or not next_offset:
             break
 
         page_cursor = {
@@ -290,13 +269,9 @@ def crawl_comments(
             "offset": next_offset,
         }
 
-    if incremental:
-        write_comment_rows(
-            output_path,
-            merge_comment_rows(read_comment_rows(output_path)),
-        )
-
-    saved_count = len(read_comment_rows(output_path))
+    saved_rows = merge_comment_rows(collected_rows)
+    write_comment_rows(output_path, saved_rows)
+    saved_count = len(saved_rows)
 
     print(
         f"评论已保存：{output_path}，"
