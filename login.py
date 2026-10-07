@@ -12,14 +12,46 @@ import json
 import os
 import time
 import urllib.request
-from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-BASE_DIR = Path(__file__).resolve().parent
+from config import BASE_DIR
 
 # 登录状态保存的文件名
 STATE_FILE = BASE_DIR / "bilibili_state.json"
+
+BROWSER_CHANNELS = (
+    ("chrome", "Google Chrome"),
+    ("msedge", "Microsoft Edge"),
+)
+
+
+def launch_browser(playwright, headless=False):
+    """优先使用本机浏览器，缺失时回退到 Playwright Chromium。"""
+    for channel, label in BROWSER_CHANNELS:
+        try:
+            browser = playwright.chromium.launch(
+                headless=headless,
+                channel=channel,
+            )
+        except PlaywrightError:
+            continue
+
+        print(f"使用 {label} 启动浏览器")
+        return browser
+
+    try:
+        browser = playwright.chromium.launch(headless=headless)
+    except PlaywrightError as exc:
+        raise RuntimeError(
+            "未找到可用浏览器。请安装 Google Chrome 或 Microsoft Edge，"
+            "或运行 `python -m playwright install chromium` 安装 "
+            "Playwright 自带浏览器。"
+        ) from exc
+
+    print("使用 Playwright Chromium 启动浏览器")
+    return browser
 
 
 # =========================
@@ -115,7 +147,7 @@ def check_login_online():
 def login():
     """打开浏览器，人工登录，然后把 cookie 存到 STATE_FILE"""
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, channel="chrome")
+        browser = launch_browser(p, headless=False)
 
         context = browser.new_context()
 

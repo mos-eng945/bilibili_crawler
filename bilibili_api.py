@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -13,24 +12,6 @@ from login import get_cookie_header
 
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
-BASE_DIR = Path(__file__).resolve().parent
-
-
-def safe_filename(value):
-    """移除 Windows 文件名不允许的字符。"""
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value))
-    return cleaned.rstrip(" .")
-
-
-def get_video_dir(video_info):
-    """根据 UP 主、标题和 BV 号生成视频输出目录。"""
-    up_name = safe_filename(
-        video_info.get("owner", {}).get("name") or "unknown"
-    )
-    title = safe_filename(video_info.get("title") or "untitled")
-    bvid = safe_filename(video_info.get("bvid") or "unknown")
-
-    return BASE_DIR / "output" / f"{up_name}_{title}_{bvid}"
 
 # Bilibili WBI 签名使用的字符重排表
 MIXIN_KEY_ENC_TAB = [
@@ -153,7 +134,7 @@ def sign_wbi_params(params, mixin_key):
     w_rid = hashlib.md5(f"{query}{mixin_key}".encode()).hexdigest()
     return f"{query}&w_rid={w_rid}"
 
-
+# 
 def request_wbi_json(path, params, cookie, mixin_key):
     """请求需要 WBI 签名的 JSON 接口。"""
     query = sign_wbi_params(params, mixin_key)

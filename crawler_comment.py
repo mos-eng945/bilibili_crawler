@@ -1,22 +1,17 @@
 """Bilibili 一级评论下载器。"""
 
 import argparse
-import csv
-import io
 import json
 import re
 import time
 
 from bilibili_api import (
-    get_cookie_header,
-    get_video_dir,
-    get_video_info,
-    get_wbi_mixin_key,
     request_wbi_json,
 )
 from config import DEFAULT_BVID
-from crawler_common import write_csv
+from crawler_common import normalize_url, write_csv
 from login import ensure_login
+from session import VideoSession
 
 COMMENT_COLUMNS = [
     "rpid",
@@ -28,10 +23,13 @@ COMMENT_COLUMNS = [
     "like",
     "reply_count",
     "state",
+    "ip_location",
     "image_urls",
 ]
 COMMENT_MODE_TIME = 2
+COMMENT_MODE_HOT = 3
 COMMENT_PAGE_SIZE = 30
+COMMENT_MAX_PAGE_SIZE = 30
 COMMENT_WEB_LOCATION = 1315875
 COMMENT_PROGRESS_PAGE_INTERVAL = 10
 COMMENT_RETRY_ATTEMPTS = 3
@@ -43,12 +41,7 @@ def parse_image_urls(content):
     urls = []
 
     for item in content.get("pictures") or []:
-        url = item.get("img_src") or ""
-
-        if url.startswith("//"):
-            url = f"https:{url}"
-        elif url.startswith("http://"):
-            url = f"https://{url[7:]}"
+        url = normalize_url(item.get("img_src"))
 
         if url:
             urls.append(url)
@@ -71,6 +64,13 @@ def parse_comment(comment):
     member = comment.get("member") or {}
     level_info = member.get("level_info") or {}
     content = comment.get("content") or {}
+    reply_control = comment.get("reply_control") or {}
+    ip_location = normalize_text(reply_control.get("location", ""))
+
+    for prefix in ("IP属地：", "IP属地:"):
+        if ip_location.startswith(prefix):
+            ip_location = ip_location[len(prefix) :].strip()
+            break
 
     return {
         "rpid": comment.get("rpid"),
@@ -82,18 +82,26 @@ def parse_comment(comment):
         "like": comment.get("like", 0),
         "reply_count": comment.get("count", 0),
         "state": comment.get("state", 0),
+        "ip_location": ip_location,
         "image_urls": parse_image_urls(content),
     }
 
 
-def request_comment_page(oid, page_cursor, cookie, mixin_key):
+def request_comment_page(
+    oid,
+    page_cursor,
+    cookie,
+    mixin_key,
+    mode,
+    page_size,
+):
     """使用游标请求一页一级评论。"""
     params = {
         "oid": oid,
         "type": 1,
-        "mode": COMMENT_MODE_TIME,
+        "mode": mode,
         "next": page_cursor.get("next", 0),
-        "ps": COMMENT_PAGE_SIZE,
+        "ps": page_size,
         "pagination_str": json.dumps(
             {"offset": page_cursor.get("offset", "")},
             separators=(",", ":"),
@@ -110,7 +118,14 @@ def request_comment_page(oid, page_cursor, cookie, mixin_key):
     )
 
 
-def request_comment_page_with_retry(oid, page_cursor, cookie, mixin_key):
+def request_comment_page_with_retry(
+    oid,
+    page_cursor,
+    cookie,
+    mixin_key,
+    mode,
+    page_size,
+):
     """请求评论页，并在失败时短暂重试。"""
     for attempt in range(1, COMMENT_RETRY_ATTEMPTS + 1):
         try:
@@ -119,6 +134,8 @@ def request_comment_page_with_retry(oid, page_cursor, cookie, mixin_key):
                 page_cursor,
                 cookie,
                 mixin_key,
+                mode,
+                page_size,
             )
         except RuntimeError:
             if attempt == COMMENT_RETRY_ATTEMPTS:
@@ -138,22 +155,6 @@ def extract_page_comments(data, include_top=False):
 
     replies.extend(data.get("replies") or [])
     return [parse_comment(comment) for comment in replies]
-
-
-def read_comment_rows(path):
-    """读取已经保存的评论 CSV。"""
-    if not path.exists():
-        return []
-
-    with open(path, "r", newline="", encoding="utf-8-sig") as file:
-        content = file.read().replace("\x00", "")
-
-    return list(csv.DictReader(io.StringIO(content)))
-
-
-def append_comment_rows(path, rows):
-    """把新评论追加到 CSV，并在新文件时写入表头。"""
-    write_csv(path, COMMENT_COLUMNS, rows, append=True)
 
 
 def write_comment_rows(path, rows):
@@ -184,101 +185,112 @@ def merge_comment_rows(rows):
     return merged
 
 
-def crawl_comments(
-    bvid=DEFAULT_BVID,
-    workers=None,
-):
-    """完整采集视频的一级评论并保存为 CSV。"""
-    if workers is not None:
-        print("游标分页需要顺序请求，workers 参数不再生效")
+class CommentCrawler:
+    """按 WBI 游标分页顺序采集视频的全部一级评论。"""
 
-    cookie = get_cookie_header()
-    video_info = get_video_info(bvid, cookie)
-    oid = video_info.get("aid")
-
-    if not oid:
-        raise RuntimeError(f"视频 {bvid} 没有返回 aid")
-
-    mixin_key = get_wbi_mixin_key(cookie)
-    video_dir = get_video_dir(video_info)
-    video_dir.mkdir(parents=True, exist_ok=True)
-    output_path = video_dir / f"comments_{bvid}.csv"
-    page_cursor = {}
-    page_number = 0
-    total_reply_count = 0
-    collected_rows = []
-    seen_rpids = set()
-
-    print(f"开始完整采集评论：{output_path}")
-    print("开始采集评论，使用 WBI 游标分页")
-
-    while True:
-        data = request_comment_page_with_retry(
-            oid,
-            page_cursor,
-            cookie,
-            mixin_key,
+    def __init__(
+        self,
+        session,
+        mode=COMMENT_MODE_TIME,
+        page_size=COMMENT_PAGE_SIZE,
+    ):
+        self.session = session
+        self.mode = int(mode)
+        self.page_size = min(
+            max(1, int(page_size)),
+            COMMENT_MAX_PAGE_SIZE,
         )
-        page_number += 1
-        page_comments = extract_page_comments(
-            data,
-            include_top=page_number == 1,
+
+        if self.mode not in {COMMENT_MODE_TIME, COMMENT_MODE_HOT}:
+            raise ValueError("评论模式只能是 2（时间）或 3（热门）")
+
+    def run(self):
+        oid = self.session.video_info.get("aid")
+
+        if not oid:
+            raise RuntimeError(f"视频 {self.session.bvid} 没有返回 aid")
+
+        video_dir = self.session.video_dir
+        video_dir.mkdir(parents=True, exist_ok=True)
+        output_path = video_dir / f"comments_{self.session.bvid}.csv"
+        page_cursor = {}
+        page_number = 0
+        total_reply_count = 0
+        collected_rows = []
+        seen_rpids = set()
+
+        mode_name = "热门评论" if self.mode == COMMENT_MODE_HOT else "时间顺序"
+        print(f"开始完整采集评论：{output_path}")
+        print(f"评论模式：{mode_name}，每页 {self.page_size} 条")
+        print("开始采集评论，使用 WBI 游标分页")
+
+        while True:
+            data = request_comment_page_with_retry(
+                oid,
+                page_cursor,
+                self.session.cookie,
+                self.session.mixin_key,
+                self.mode,
+                self.page_size,
+            )
+            page_number += 1
+            page_comments = extract_page_comments(
+                data,
+                include_top=page_number == 1,
+            )
+            new_rows = []
+
+            for comment in page_comments:
+                rpid = str(comment["rpid"] or "")
+
+                if not rpid or rpid in seen_rpids:
+                    continue
+
+                seen_rpids.add(rpid)
+                new_rows.append(
+                    {
+                        **comment,
+                        "image_urls": "|".join(comment["image_urls"]),
+                    }
+                )
+
+            collected_rows.extend(new_rows)
+
+            cursor = data.get("cursor") or {}
+            total_reply_count = cursor.get("all_count") or total_reply_count
+            is_end = bool(cursor.get("is_end"))
+            next_offset = (cursor.get("pagination_reply") or {}).get("next_offset")
+
+            if (
+                page_number == 1
+                or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
+                or is_end
+            ):
+                print(
+                    f"已获取第 {page_number} 页，"
+                    f"本页获取 {len(new_rows)} 条，"
+                    f"累计 {len(seen_rpids)} 条；"
+                    f"视频总评论 {total_reply_count} 条（含子评论）"
+                )
+
+            if is_end or not next_offset:
+                break
+
+            page_cursor = {
+                "next": cursor.get("next", 0),
+                "offset": next_offset,
+            }
+
+        saved_rows = merge_comment_rows(collected_rows)
+        write_comment_rows(output_path, saved_rows)
+        saved_count = len(saved_rows)
+
+        print(
+            f"评论已保存：{output_path}，"
+            f"共 {saved_count} 条一级评论；"
+            f"视频总评论 {total_reply_count} 条（含子评论）"
         )
-        new_rows = []
-
-        for comment in page_comments:
-            rpid = str(comment["rpid"] or "")
-
-            if not rpid or rpid in seen_rpids:
-                continue
-
-            seen_rpids.add(rpid)
-            new_rows.append(
-                {
-                    **comment,
-                    "image_urls": "|".join(comment["image_urls"]),
-                }
-            )
-
-        collected_rows.extend(new_rows)
-
-        cursor = data.get("cursor") or {}
-        total_reply_count = cursor.get("all_count") or total_reply_count
-        is_end = bool(cursor.get("is_end"))
-        next_offset = (
-            cursor.get("pagination_reply") or {}
-        ).get("next_offset")
-
-        if (
-            page_number == 1
-            or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
-            or is_end
-        ):
-            print(
-                f"已获取第 {page_number} 页，"
-                f"本页获取 {len(new_rows)} 条，"
-                f"累计 {len(seen_rpids)} 条；"
-                f"视频总评论 {total_reply_count} 条（含子评论）"
-            )
-
-        if is_end or not next_offset:
-            break
-
-        page_cursor = {
-            "next": cursor.get("next", 0),
-            "offset": next_offset,
-        }
-
-    saved_rows = merge_comment_rows(collected_rows)
-    write_comment_rows(output_path, saved_rows)
-    saved_count = len(saved_rows)
-
-    print(
-        f"评论已保存：{output_path}，"
-        f"共 {saved_count} 条一级评论；"
-        f"视频总评论 {total_reply_count} 条（含子评论）"
-    )
-    return output_path
+        return output_path
 
 
 def main():
@@ -290,15 +302,25 @@ def main():
         help="视频 BV 号，不填写时使用 DEFAULT_BVID",
     )
     parser.add_argument(
-        "--workers",
+        "--mode",
+        choices=("time", "hot"),
+        default="time",
+        help="评论排序：time 按时间，hot 按热门",
+    )
+    parser.add_argument(
+        "--page-size",
         type=int,
-        default=None,
-        help="兼容旧参数；WBI 游标分页需要顺序请求",
+        default=COMMENT_PAGE_SIZE,
+        help="评论每页数量，最大 30",
     )
     args = parser.parse_args()
 
     ensure_login()
-    crawl_comments(args.bvid, workers=args.workers)
+    CommentCrawler(
+        VideoSession(args.bvid),
+        mode=COMMENT_MODE_HOT if args.mode == "hot" else COMMENT_MODE_TIME,
+        page_size=args.page_size,
+    ).run()
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from bilibili_api import get_up_follower_count, get_video_info
 
 T = TypeVar("T")
 
-SEARCH_DEFAULT_WORKERS = 3
+SEARCH_DEFAULT_WORKERS = 2
 SEARCH_MAX_WORKERS = 10
 SEARCH_RETRY_ATTEMPTS = 3
 SEARCH_RETRY_DELAY_SECONDS = 1
@@ -25,6 +25,10 @@ SEARCH_COLUMNS = [
     "published_at",
     "author",
     "mid",
+    "partition",
+    "tags",
+    "duration_seconds",
+    "cover_url",
     "like",
     "comment_count",
     "favorite_count",
@@ -39,6 +43,45 @@ def clean_html_text(value):
     """移除搜索结果标题中的高亮标签。"""
     text = re.sub(r"<[^>]+>", "", str(value or ""))
     return html.unescape(text).strip()
+
+
+def normalize_url(value):
+    """把 B 站常见的协议相对 URL 转成 HTTPS。"""
+    url = str(value or "").strip()
+
+    if url.startswith("//"):
+        return f"https:{url}"
+
+    if url.startswith("http://"):
+        return f"https://{url[7:]}"
+
+    return url
+
+
+def parse_duration_seconds(value):
+    """把分:秒或秒数转换成整数秒。"""
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+
+    text = str(value or "").strip()
+
+    if not text:
+        return 0
+
+    try:
+        parts = [int(part) for part in text.split(":")]
+    except ValueError:
+        return 0
+
+    if not 1 <= len(parts) <= 3:
+        return 0
+
+    seconds = 0
+
+    for part in parts:
+        seconds = seconds * 60 + max(0, part)
+
+    return seconds
 
 
 def format_published_at(timestamp):
@@ -77,6 +120,10 @@ def build_video_row(
     published_at,
     author,
     mid,
+    partition,
+    tags,
+    duration_seconds,
+    cover_url,
     like,
     comment_count,
     favorite_count,
@@ -92,6 +139,10 @@ def build_video_row(
         "published_at": published_at or "",
         "author": author or "",
         "mid": mid or "",
+        "partition": partition or "",
+        "tags": tags or "",
+        "duration_seconds": duration_seconds or 0,
+        "cover_url": normalize_url(cover_url),
         "like": like or 0,
         "comment_count": comment_count or 0,
         "favorite_count": favorite_count or 0,
@@ -100,16 +151,6 @@ def build_video_row(
         "play_count": play_count or 0,
         "danmaku_count": danmaku_count or 0,
     }
-
-
-def timestamped_path(directory, prefix, count, suffix=".csv"):
-    """生成带运行时间的输出文件路径。"""
-    return directory / f"{prefix}_{run_timestamp()}_{count}{suffix}"
-
-
-def run_timestamp():
-    """返回用于目录和文件名的运行时间。"""
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def write_csv(path, columns, rows, append=False):
@@ -126,8 +167,6 @@ def write_csv(path, columns, rows, append=False):
 
         writer.writerows(rows)
 
-    return path
-
 
 def write_json(path, data):
     """写入 UTF-8 JSON 文件。"""
@@ -140,13 +179,24 @@ def write_json(path, data):
 
 
 def run_concurrently(function, values, workers, label):
-    """并发执行任务，并按输入顺序返回结果。"""
+    """按配置并发或顺序执行任务，并按输入顺序返回结果。"""
     total = len(values)
 
     if total == 0:
         return []
 
     worker_count = min(max(1, int(workers)), total)
+
+    if worker_count == 1:
+        results = []
+
+        for value in values:
+            results.append(function(value))
+            completed = len(results)
+            if completed == total or completed % 5 == 0:
+                print(f"{label}进度：{completed}/{total}")
+
+        return results
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         results = []

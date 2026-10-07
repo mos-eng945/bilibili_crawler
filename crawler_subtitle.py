@@ -14,16 +14,13 @@ import urllib.request
 
 from bilibili_api import (
     USER_AGENT,
-    get_cookie_header,
     get_player_subtitles,
-    get_video_dir,
-    get_video_info,
-    get_wbi_mixin_key,
-    safe_filename,
 )
 from config import DEFAULT_BVID, parse_page_range
 from crawler_common import write_json
 from login import ensure_login
+from output_paths import safe_filename
+from session import VideoSession
 
 
 def download_subtitle_json(url, cookie):
@@ -117,77 +114,75 @@ def save_subtitle(
     return json_path, srt_path
 
 
-def crawl_subtitles(
-    bvid=DEFAULT_BVID,
-    page_range=None,
-    language=None,
-):
-    """下载视频全部或指定分 P 范围的字幕。"""
-    cookie = get_cookie_header()
-    mixin_key = get_wbi_mixin_key(cookie)
-    video_info = get_video_info(bvid, cookie)
-    pages = video_info.get("pages", [])
-    video_dir = get_video_dir(video_info)
+class SubtitleCrawler:
+    """下载视频全部或指定分 P 范围的字幕，同时生成 JSON 和 SRT。"""
 
-    if not pages:
-        raise RuntimeError(f"没有找到视频分 P：{bvid}")
+    def __init__(self, session, page_range=None, language=None):
+        self.session = session
+        self.page_range = page_range
+        self.language = language
 
-    if page_range is not None:
-        page_start, page_end = page_range
-        pages = [
-            page for page in pages if page_start <= page.get("page", 0) <= page_end
-        ]
+    def run(self):
+        bvid = self.session.bvid
+        pages = self.session.pages(self.page_range)
+        video_dir = self.session.video_dir
+        downloaded = 0
 
-        if not pages:
-            raise RuntimeError(f"视频 {bvid} 没有分 P {page_start}-{page_end}")
+        for page in pages:
+            current_page = page.get("page", 1)
+            cid = page.get("cid")
+            part = page.get("part", "")
 
-    downloaded = 0
-
-    for page in pages:
-        current_page = page.get("page", 1)
-        cid = page.get("cid")
-        part = page.get("part", "")
-
-        if not cid:
-            print(f"跳过 P{current_page}：没有 cid")
-            continue
-
-        subtitle_items = get_player_subtitles(bvid, cid, cookie, mixin_key)
-
-        if language:
-            subtitle_items = [
-                item for item in subtitle_items if item.get("lan") == language
-            ]
-
-        if not subtitle_items:
-            print(f"P{current_page} 没有找到可下载字幕")
-            continue
-
-        print(f"P{current_page} 找到 {len(subtitle_items)} 条字幕")
-
-        for subtitle_item in subtitle_items:
-            subtitle_url = subtitle_item.get("subtitle_url")
-
-            if not subtitle_url:
-                print(f"跳过 {subtitle_item.get('lan')}：没有字幕地址")
+            if not cid:
+                print(f"跳过 P{current_page}：没有 cid")
                 continue
 
-            subtitle_data = download_subtitle_json(subtitle_url, cookie)
-            json_path, srt_path = save_subtitle(
-                video_dir,
+            subtitle_items = get_player_subtitles(
                 bvid,
                 cid,
-                current_page,
-                part,
-                subtitle_item,
-                subtitle_data,
+                self.session.cookie,
+                self.session.mixin_key,
             )
 
-            downloaded += 1
-            print(f"已保存：{json_path.name}")
-            print(f"已保存：{srt_path.name}")
+            if self.language:
+                subtitle_items = [
+                    item
+                    for item in subtitle_items
+                    if item.get("lan") == self.language
+                ]
 
-    print(f"下载完成，共保存 {downloaded} 条字幕")
+            if not subtitle_items:
+                print(f"P{current_page} 没有找到可下载字幕")
+                continue
+
+            print(f"P{current_page} 找到 {len(subtitle_items)} 条字幕")
+
+            for subtitle_item in subtitle_items:
+                subtitle_url = subtitle_item.get("subtitle_url")
+
+                if not subtitle_url:
+                    print(f"跳过 {subtitle_item.get('lan')}：没有字幕地址")
+                    continue
+
+                subtitle_data = download_subtitle_json(
+                    subtitle_url,
+                    self.session.cookie,
+                )
+                json_path, srt_path = save_subtitle(
+                    video_dir,
+                    bvid,
+                    cid,
+                    current_page,
+                    part,
+                    subtitle_item,
+                    subtitle_data,
+                )
+
+                downloaded += 1
+                print(f"已保存：{json_path.name}")
+                print(f"已保存：{srt_path.name}")
+
+        print(f"下载完成，共保存 {downloaded} 条字幕")
 
 
 def main():
@@ -214,11 +209,11 @@ def main():
     args = parser.parse_args()
 
     ensure_login()
-    crawl_subtitles(
-        args.bvid,
+    SubtitleCrawler(
+        VideoSession(args.bvid),
         page_range=args.page_range,
         language=args.language,
-    )
+    ).run()
 
 
 if __name__ == "__main__":

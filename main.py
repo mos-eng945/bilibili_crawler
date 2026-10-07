@@ -2,16 +2,40 @@
 
 import argparse
 
-from config import DEFAULT_BVID, parse_page_range
+from config import (
+    DEFAULT_BVID,
+    parse_page_range,
+    resolve_search_page_range,
+)
+from crawler_common import SEARCH_DEFAULT_WORKERS
 from login import ensure_login
 
 OPTION_FLAGS = {
     "page": "-p",
+    "search_page": "--search-page",
     "page_size": "--page-size",
     "workers": "-w",
     "limit": "--limit",
     "language": "--language",
+    "comment_mode": "--comment-mode",
+    "comment_page_size": "--comment-page-size",
 }
+
+
+def parse_comment_page_size(value):
+    """校验评论每页数量。"""
+    try:
+        page_size = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("评论每页数量必须是整数") from exc
+
+    if not 1 <= page_size <= 30:
+        raise argparse.ArgumentTypeError(
+            "评论每页数量必须满足 1 <= PAGE_SIZE <= 30"
+        )
+
+    return page_size
+
 
 def build_parser():
     """创建 bilibili 命令行参数解析器。"""
@@ -57,7 +81,7 @@ def build_parser():
         "-a",
         "--all",
         action="store_true",
-        help="依次采集信息、评论、字幕和弹幕",
+        help="依次采集信息、字幕、弹幕和评论",
     )
     actions.add_argument(
         "-k",
@@ -91,7 +115,15 @@ def build_parser():
         type=parse_page_range,
         metavar="START,END",
         default=None,
-        help="字幕、弹幕或关键词搜索页范围，不适用于热搜",
+        help="字幕或弹幕分 P 范围",
+    )
+    parser.add_argument(
+        "--search-page",
+        dest="search_page",
+        type=parse_page_range,
+        metavar="START,END",
+        default=None,
+        help="关键词搜索页范围，单值 10 表示 1-10",
     )
     parser.add_argument(
         "--page-size",
@@ -104,7 +136,10 @@ def build_parser():
         dest="workers",
         type=int,
         default=None,
-        help="搜索并发线程数，默认 3，最大 10",
+        help=(
+            "关键词搜索或 UP 主视频并发线程数，"
+            f"默认 {SEARCH_DEFAULT_WORKERS}，最大 10"
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -116,6 +151,18 @@ def build_parser():
         "--language",
         default=None,
         help="字幕语言，例如 zh-CN 或 ai-zh",
+    )
+    parser.add_argument(
+        "--comment-mode",
+        choices=("time", "hot"),
+        default=None,
+        help="评论排序：time 按时间，hot 按热门",
+    )
+    parser.add_argument(
+        "--comment-page-size",
+        type=parse_comment_page_size,
+        default=None,
+        help="评论每页数量，默认 30，最大 30",
     )
     return parser
 
@@ -153,37 +200,41 @@ def main(argv=None):
         if not args.mid.strip().isdigit() or int(args.mid) <= 0:
             parser.error("UP 主 MID 必须是大于 0 的数字")
 
-        from crawler_up import crawl_user_videos
+        from crawler_up import UpVideosCrawler
+        from session import Session
 
         ensure_login()
-        crawl_user_videos(
+        UpVideosCrawler(
+            Session(),
             args.mid,
             page_size=args.page_size or 30,
-            workers=args.workers or 3,
-        )
+            workers=args.workers or SEARCH_DEFAULT_WORKERS,
+        ).run()
         return
 
     if args.keyword is not None:
         reject_unused_options(
             parser,
             args,
-            {"page", "page_size", "workers"},
+            {"search_page", "page_size", "workers"},
         )
 
         if not args.keyword.strip():
             parser.error("搜索关键词不能为空")
 
-        from crawler_search import crawl_search
+        from crawler_search import SearchCrawler
+        from session import Session
 
-        page_start, page_end = args.page or (1, 1)
+        page_start, page_end = resolve_search_page_range(args.search_page)
         ensure_login()
-        crawl_search(
+        SearchCrawler(
+            Session(),
             args.keyword,
             page=page_start,
             pages=page_end - page_start + 1,
             page_size=args.page_size or 20,
-            workers=args.workers or 3,
-        )
+            workers=args.workers or SEARCH_DEFAULT_WORKERS,
+        ).run()
         return
 
     if args.hot_search:
@@ -193,50 +244,72 @@ def main(argv=None):
             {"page_size", "workers", "limit"},
         )
 
-        from crawler_hot import crawl_hot_search
+        from crawler_hot import HotSearchCrawler
+        from session import Session
 
         ensure_login()
-        crawl_hot_search(
+        HotSearchCrawler(
+            Session(),
             limit=args.limit or 10,
             page=1,
             pages=1,
             page_size=args.page_size or 20,
-            workers=args.workers or 3,
-        )
+            workers=args.workers or SEARCH_DEFAULT_WORKERS,
+        ).run()
         return
 
     if args.subtitles:
         reject_unused_options(parser, args, {"bvid", "page", "language"})
     elif args.danmaku:
         reject_unused_options(parser, args, {"bvid", "page"})
+    elif args.comments or args.all:
+        reject_unused_options(
+            parser,
+            args,
+            {"bvid", "comment_mode", "comment_page_size"},
+        )
     else:
         reject_unused_options(parser, args, {"bvid"})
 
-    from crawler_comment import crawl_comments
-    from crawler_dm import goto
-    from crawler_info import crawl_video_info
-    from crawler_subtitle import crawl_subtitles
+    from crawler_comment import CommentCrawler
+    from crawler_dm import DanmakuCrawler
+    from crawler_info import VideoInfoCrawler
+    from crawler_subtitle import SubtitleCrawler
+    from session import VideoSession
 
     print("视频：", bvid)
     ensure_login()
 
+    session = VideoSession(bvid)
+    comment_mode = 3 if args.comment_mode == "hot" else 2
+    comment_page_size = args.comment_page_size or 30
+
     if args.info:
-        crawl_video_info(bvid)
+        VideoInfoCrawler(session).run()
     elif args.comments:
-        crawl_comments(bvid)
+        CommentCrawler(
+            session,
+            mode=comment_mode,
+            page_size=comment_page_size,
+        ).run()
     elif args.subtitles:
-        crawl_subtitles(
-            bvid,
+        SubtitleCrawler(
+            session,
             page_range=args.page,
             language=args.language,
-        )
+        ).run()
     elif args.danmaku:
-        goto(bvid, page_range=args.page)
+        DanmakuCrawler(session, page_range=args.page).run()
     elif args.all:
-        crawl_video_info(bvid)
-        crawl_comments(bvid)
-        crawl_subtitles(bvid)
-        goto(bvid)
+        VideoInfoCrawler(session).run()
+        SubtitleCrawler(session).run()
+        DanmakuCrawler(session).run()
+        # 评论最慢，放到最后，先拿到其余结果
+        CommentCrawler(
+            session,
+            mode=comment_mode,
+            page_size=comment_page_size,
+        ).run()
 
 
 if __name__ == "__main__":

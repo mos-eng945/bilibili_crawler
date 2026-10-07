@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "bilibili-data-crawler"
 version = "0.1.0"
 description = "Bilibili 视频信息、评论、字幕、弹幕和搜索采集工具"
-requires-python = ">=3.9"
+requires-python = ">=3.14"
 dependencies = [
     "playwright",
     "protobuf>=6.31.1,<7",
@@ -42,5 +42,7 @@ py-modules = [
     "dm_pb2",
     "login",
     "main",
+    "output_paths",
     "qt_app",
+    "session",
 ]

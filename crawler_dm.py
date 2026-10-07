@@ -14,9 +14,9 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 
 import dm_pb2
-from bilibili_api import get_cookie_header, get_video_dir, get_video_info
-from login import STATE_FILE, ensure_login
 from config import DEFAULT_BVID
+from login import STATE_FILE, ensure_login, launch_browser
+from session import VideoSession
 
 # 弹幕接口通常一次覆盖约 120 秒
 SEEK_STEP_SECONDS = 120
@@ -146,60 +146,40 @@ def crawl_page(page, bvid, page_info, total_pages, video_dir, use_page_suffix):
         page.remove_listener("response", handle_response)
 
 
-def goto(bvid, page_range=None):
-    """采集视频全部或指定分 P 范围的弹幕。"""
-    cookie = get_cookie_header()
-    video_info = get_video_info(bvid, cookie)
-    pages = video_info.get("pages", [])
-    video_dir = get_video_dir(video_info)
+class DanmakuCrawler:
+    """打开播放器，监听弹幕接口，采集全部或指定分 P 的弹幕。"""
 
-    if not pages:
-        raise RuntimeError(f"没有找到视频分 P：{bvid}")
+    def __init__(self, session, page_range=None):
+        self.session = session
+        self.page_range = page_range
 
-    video_page_count = len(pages)
+    def run(self):
+        bvid = self.session.bvid
+        pages = self.session.pages(self.page_range)
+        video_page_count = len(self.session.video_info.get("pages", []))
+        video_dir = self.session.video_dir
 
-    if page_range is not None:
-        page_start, page_end = page_range
-        pages = [
-            item
-            for item in pages
-            if page_start <= item.get("page", 0) <= page_end
-        ]
+        with sync_playwright() as p:
+            browser = launch_browser(p, headless=False)
+            context = browser.new_context(storage_state=STATE_FILE)
+            page = context.new_page()
+            total_saved = 0
 
-        if not pages:
-            raise RuntimeError(
-                f"视频 {bvid} 没有分 P {page_start}-{page_end}"
-            )
+            for page_info in pages:
+                total_saved += crawl_page(
+                    page,
+                    bvid,
+                    page_info,
+                    video_page_count,
+                    video_dir,
+                    video_page_count > 1,
+                )
 
-    # =========================
-    # 1. 启动浏览器
-    # =========================
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, channel="chrome")
-
-        context = browser.new_context(storage_state=STATE_FILE)
-
-        page = context.new_page()
-
-        total_saved = 0
-
-        for page_info in pages:
-            total_saved += crawl_page(
-                page,
-                bvid,
-                page_info,
-                video_page_count,
-                video_dir,
-                video_page_count > 1,
-            )
-
-        print(f"爬取完成，共写入 {total_saved} 条弹幕")
-
-        browser.close()
+            print(f"爬取完成，共写入 {total_saved} 条弹幕")
+            browser.close()
 
 
 # 统一命令行入口：bilibili -d
 if __name__ == "__main__":
     ensure_login()
-    goto(DEFAULT_BVID)
+    DanmakuCrawler(VideoSession(DEFAULT_BVID)).run()

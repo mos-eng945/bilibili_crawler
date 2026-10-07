@@ -1,9 +1,9 @@
 """Table preview and directory browser dialogs."""
 
 import csv
-import io
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -14,20 +14,24 @@ from PySide6.QtCore import (
     Qt,
     QUrl,
 )
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QStackedWidget,
     QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
@@ -37,15 +41,31 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from bilibili_api import BASE_DIR
+from output_paths import (
+    OUTPUT_DIR,
+    detect_search_keyword,
+    is_subtitle_json,
+    relative_display,
+)
 from qt_ui.formatting import (
     COLUMN_LABELS,
     KEY_COLUMN_ORDER,
+    NUMBER_COLUMNS,
     format_number,
     format_preview_value,
+    friendly_file_name,
+    friendly_video_name,
     shorten_user_hash,
 )
-from qt_ui.theme import APP_STYLE
+from qt_ui.theme import APP_STYLE, icon
+
+PREVIEW_ROW_LIMIT = 5000
+# 勾选「只显示关键列」时，表格保留最前面这些列
+TABLE_COLUMN_LIMIT = 6
+# 行数不超过这个值时，长文本换行完整显示（行数多则保持单行定高，避免卡顿）
+WRAP_ROW_LIMIT = 200
+# 这些后缀在数据浏览里可以直接预览，不再交给系统默认程序
+BROWSABLE_SUFFIXES = {".csv", ".json", ".srt"}
 
 
 class CompletionDialog(QDialog):
@@ -53,6 +73,7 @@ class CompletionDialog(QDialog):
 
     def __init__(self, task_name, path=None, parent=None):
         super().__init__(parent)
+        self.path = Path(path) if path else None
         self.setObjectName("CompletionDialog")
         self.setWindowTitle("任务完成")
         self.setModal(True)
@@ -99,13 +120,7 @@ class CompletionDialog(QDialog):
         display_path = "任务已成功结束"
 
         if path:
-            try:
-                display_path = (
-                    "output/"
-                    + path.relative_to(BASE_DIR / "output").as_posix()
-                )
-            except ValueError:
-                display_path = str(path)
+            display_path = relative_display(path)
 
         panel_value = QLabel(display_path)
         panel_value.setObjectName("CompletionPath")
@@ -121,13 +136,10 @@ class CompletionDialog(QDialog):
         actions.addStretch(1)
 
         if path:
-            open_button = QPushButton("打开")
+            open_button = QPushButton("查看数据")
             open_button.setMinimumWidth(88)
-            open_button.clicked.connect(
-                lambda: QDesktopServices.openUrl(
-                    QUrl.fromLocalFile(str(path))
-                )
-            )
+            open_button.setToolTip("在数据查看里打开这次产出的目录")
+            open_button.clicked.connect(self._open_data_view)
             actions.addWidget(open_button)
 
         close_button = QPushButton("完成")
@@ -137,9 +149,19 @@ class CompletionDialog(QDialog):
         actions.addWidget(close_button)
         layout.addLayout(actions)
 
+    def _open_data_view(self):
+        """先关掉完成提示，再在程序里打开数据查看。"""
+        parent = self.parent()
+        self.accept()
+
+        if self.path is None or parent is None:
+            return
+
+        DataBrowserDialog(parent, initial_path=self.path).exec()
+
 
 class PreviewTableModel(QAbstractTableModel):
-    """按需向表格视图提供数据，避免为每一行创建单元格对象。"""
+    """按需向表格视图提供数据，支持筛选和排序。"""
 
     def __init__(
         self,
@@ -148,18 +170,28 @@ class PreviewTableModel(QAbstractTableModel):
         parent=None,
         full_rows=None,
         sort_keys=None,
+        raw_headers=None,
     ):
         super().__init__(parent)
         self.headers = headers
-        self.rows = rows
-        self.full_rows = full_rows or rows
-        self.sort_keys = sort_keys or [list(row) for row in rows]
+        self.raw_headers = raw_headers or headers
+        self._display = rows
+        self._full = full_rows or rows
+        self._sort = sort_keys or [list(row) for row in rows]
+        self._view = list(range(len(self._display)))
+        self._sort_column = None
+        self._sort_order = Qt.SortOrder.AscendingOrder
+        self.numeric_columns = {
+            index
+            for index, header in enumerate(self.raw_headers)
+            if header in NUMBER_COLUMNS
+        }
 
     def rowCount(self, parent=QModelIndex()):
         if parent.isValid():
             return 0
 
-        return len(self.rows)
+        return len(self._view)
 
     def columnCount(self, parent=QModelIndex()):
         if parent.isValid():
@@ -171,11 +203,31 @@ class PreviewTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
 
+        row = self._view[index.row()]
+        column = index.column()
+
         if role == Qt.ItemDataRole.DisplayRole:
-            return self.rows[index.row()][index.column()]
+            return self._display[row][column]
 
         if role == Qt.ItemDataRole.ToolTipRole:
-            return self.full_rows[index.row()][index.column()]
+            value = self._full[row][column]
+
+            if self.raw_headers[column] == "cover_url":
+                return f"点击打开封面\n{value}"
+
+            return value
+
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            if column in self.numeric_columns:
+                return int(
+                    Qt.AlignmentFlag.AlignRight
+                    | Qt.AlignmentFlag.AlignVCenter
+                )
+
+            return int(
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter
+            )
 
         return None
 
@@ -194,24 +246,52 @@ class PreviewTableModel(QAbstractTableModel):
         return section + 1
 
     def sort(self, column, order=Qt.SortOrder.AscendingOrder):
-        if (
-            not self.rows
-            or column < 0
-            or column >= len(self.headers)
-        ):
+        if not self._view or column < 0 or column >= len(self.headers):
             return
 
-        indexes = sorted(
-            range(len(self.rows)),
-            key=lambda row_index: self.sort_keys[row_index][column],
-            reverse=order == Qt.SortOrder.DescendingOrder,
-        )
+        self._sort_column = column
+        self._sort_order = order
 
         self.beginResetModel()
-        self.rows = [self.rows[index] for index in indexes]
-        self.full_rows = [self.full_rows[index] for index in indexes]
-        self.sort_keys = [self.sort_keys[index] for index in indexes]
+        self._apply_sort()
         self.endResetModel()
+
+    def set_filter(self, text):
+        """按关键字筛选，命中任意一列即保留。返回筛选后的行数。"""
+        text = str(text or "").strip().casefold()
+
+        self.beginResetModel()
+
+        if not text:
+            self._view = list(range(len(self._display)))
+        else:
+            self._view = [
+                index
+                for index, row in enumerate(self._display)
+                if any(text in str(cell).casefold() for cell in row)
+            ]
+
+        self._apply_sort()
+        self.endResetModel()
+        return len(self._view)
+
+    def _apply_sort(self):
+        column = self._sort_column
+
+        if column is None:
+            return
+
+        self._view.sort(
+            key=lambda row: self._sort[row][column],
+            reverse=self._sort_order == Qt.SortOrder.DescendingOrder,
+        )
+
+    def full_row(self, row):
+        """返回视图第 `row` 行对应的完整内容（未经截断）。"""
+        return self._full[self._view[row]]
+
+    def full_value(self, row, column):
+        return self._full[self._view[row]][column]
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -228,6 +308,37 @@ class SortableTableWidgetItem(QTableWidgetItem):
         return self.sort_key < other.sort_key
 
 
+class LinkItemDelegate(QStyledItemDelegate):
+    """给链接列增加颜色、下划线和悬浮反馈。"""
+
+    link_column: int | None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.link_column = None
+
+    def paint(self, painter, option, index):
+        if index.column() != self.link_column:
+            super().paint(painter, option, index)
+            return
+
+        styled = QStyleOptionViewItem(option)
+        font = styled.font
+        font.setUnderline(True)
+        styled.font = font
+        hovered = bool(
+            styled.state & QStyle.StateFlag.State_MouseOver
+        )
+        color = QColor("#e95482" if hovered else "#2f6feb")
+        styled.palette.setColor(QPalette.ColorRole.Text, color)
+        styled.palette.setColor(QPalette.ColorRole.HighlightedText, color)
+
+        if hovered:
+            styled.backgroundBrush = QBrush(QColor("#fff0f5"))
+
+        super().paint(painter, styled, index)
+
+
 class DataPreviewDialog(QDialog):
     """用中文列名和易读格式预览 CSV/JSON 数据。"""
 
@@ -235,7 +346,10 @@ class DataPreviewDialog(QDialog):
         super().__init__(parent)
         self.path = Path(path)
         self.display_name = display_name or self.path.stem
-        self.search_keyword = self._detect_search_keyword()
+        self.search_keyword = detect_search_keyword(self.path)
+        self.bvid_column = None
+        self.cover_column = None
+        self._last_cover_open = (0.0, "")
 
         self.setWindowTitle(f"数据预览 - {self.display_name}")
         self.setWindowFlags(
@@ -245,16 +359,13 @@ class DataPreviewDialog(QDialog):
             | Qt.WindowType.WindowCloseButtonHint
         )
         self.resize(920, 600)
+        self.setMinimumSize(720, 380)
 
         self.setStyleSheet(APP_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
-
-        title = QLabel(f"数据预览 - {self.display_name}")
-        title.setObjectName("PreviewTitle")
-        layout.addWidget(title)
 
         self.meta = QLabel("正在读取数据...")
         self.meta.setObjectName("PreviewMeta")
@@ -271,9 +382,36 @@ class DataPreviewDialog(QDialog):
         self.video_overview.hide()
         layout.addWidget(self.video_overview)
 
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(10)
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("PreviewFilter")
+        self.filter_edit.setPlaceholderText("筛选（匹配任意列）")
+        self.filter_edit.setClearButtonEnabled(True)
+        # 每敲一个字都重扫整表在几千行时会发卡，合并成 250ms 一次
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(250)
+        self._filter_timer.timeout.connect(
+            lambda: self._apply_filter(self.filter_edit.text())
+        )
+        self.filter_edit.textChanged.connect(
+            lambda *_: self._filter_timer.start(250)
+        )
+        filter_row.addWidget(self.filter_edit, 1)
+
+        self.key_columns_only = QCheckBox("只显示关键列")
+        self.key_columns_only.toggled.connect(
+            self._apply_column_visibility
+        )
+        filter_row.addWidget(self.key_columns_only)
+        layout.addLayout(filter_row)
+
         self.table = QTableView()
         self.table.setObjectName("DataPreviewTable")
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
@@ -281,7 +419,13 @@ class DataPreviewDialog(QDialog):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.table.setAlternatingRowColors(True)
-        self.table.doubleClicked.connect(self._show_cell_detail)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        self.link_delegate = LinkItemDelegate(self.table)
+        self.table.setItemDelegate(self.link_delegate)
+        self.table.clicked.connect(self._handle_cell_click)
+        self.table.doubleClicked.connect(self._handle_cell_double_click)
+        self.table.entered.connect(self._update_link_cursor)
         self.table.horizontalHeader().setSectionsClickable(True)
         self.table.horizontalHeader().setSortIndicatorShown(False)
         self.table.horizontalHeader().sectionClicked.connect(
@@ -293,22 +437,36 @@ class DataPreviewDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(False)
         layout.addWidget(self.table, 1)
 
+        self._applying_widths = False
+        self._columns_user_resized = False
+        self.table.horizontalHeader().sectionResized.connect(
+            self._handle_section_resized
+        )
+
         footer = QHBoxLayout()
         self.row_hint = QLabel()
         self.row_hint.setObjectName("PreviewMeta")
         footer.addWidget(self.row_hint)
         footer.addStretch(1)
 
-        self.detail_button = QPushButton("查看完整内容")
-        self.detail_button.clicked.connect(
-            lambda: self._show_cell_detail()
+        self.open_video_button = QPushButton("打开视频")
+        self.open_video_button.setIcon(icon("icon-play-dark.svg"))
+        self.open_video_button.setEnabled(False)
+        self.open_video_button.setToolTip(
+            "打开当前选中行对应的 Bilibili 视频"
         )
-        footer.addWidget(self.detail_button)
+        self.open_video_button.clicked.connect(
+            self._open_selected_video
+        )
+        footer.addWidget(self.open_video_button)
+
+        self.row_button = QPushButton("查看整行")
+        self.row_button.setToolTip("列出当前选中行的全部字段")
+        self.row_button.clicked.connect(self._show_row_detail)
+        footer.addWidget(self.row_button)
 
         open_button = QPushButton("打开原始文件")
-        open_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
-        )
+        open_button.setIcon(icon("icon-folder.svg"))
         open_button.clicked.connect(self._open_file)
         footer.addWidget(open_button)
         layout.addLayout(footer)
@@ -319,13 +477,16 @@ class DataPreviewDialog(QDialog):
         suffix = self.path.suffix.lower()
 
         if suffix == ".csv":
-            raw_headers, headers, rows = self._load_csv()
+            raw_headers, headers, rows, truncated = self._load_csv()
         elif suffix == ".json":
-            raw_headers, headers, rows = self._load_json()
+            raw_headers, headers, rows, truncated = self._load_json()
+        elif suffix == ".srt":
+            raw_headers, headers, rows, truncated = self._load_srt()
         else:
             raw_headers = ["字段", "内容"]
             headers = ["字段", "内容"]
             rows = []
+            truncated = False
 
         raw_headers, headers, rows = self._prioritize_columns(
             raw_headers,
@@ -337,12 +498,17 @@ class DataPreviewDialog(QDialog):
         try:
             modified_at = datetime.fromtimestamp(
                 self.path.stat().st_mtime
-            ).strftime("%m-%d %H:%M")
+            ).strftime("%Y-%m-%d %H:%M")
         except OSError:
             modified_at = "未知"
 
+        row_count_text = f"{len(rows)} 行"
+
+        if truncated:
+            row_count_text += f"（仅预览前 {PREVIEW_ROW_LIMIT} 行）"
+
         self.meta.setText(
-            f"{len(rows)} 行 · {suffix.removeprefix('.').upper()} · "
+            f"{row_count_text} · {suffix.removeprefix('.').upper()} · "
             f"更新于 {modified_at}"
             + (
                 f" · 关键词：{self.search_keyword}"
@@ -394,9 +560,35 @@ class DataPreviewDialog(QDialog):
             self,
             full_rows=full_rows,
             sort_keys=sort_keys,
+            raw_headers=raw_headers,
         )
         self.table.setModel(self.preview_model)
-        self.row_hint.setText(f"共 {len(rows)} 行")
+        self.bvid_column = (
+            self.preview_raw_headers.index("bvid")
+            if "bvid" in self.preview_raw_headers
+            else None
+        )
+        self.cover_column = (
+            self.preview_raw_headers.index("cover_url")
+            if "cover_url" in self.preview_raw_headers
+            else None
+        )
+        self.link_delegate.link_column = self.cover_column
+        self.open_video_button.setVisible(self.bvid_column is not None)
+        self.table.selectionModel().currentRowChanged.connect(
+            self._update_open_video_state
+        )
+        self._update_open_video_state()
+        self._total_rows = len(rows)
+        self._base_row_hint = (
+            row_count_text
+            if not truncated
+            else f"{row_count_text}，完整数据请打开原始文件"
+        )
+        self.row_hint.setText(self._base_row_hint)
+        self.filter_edit.blockSignals(True)
+        self.filter_edit.clear()
+        self.filter_edit.blockSignals(False)
 
         self._base_column_widths = [
             self._preview_column_width(header)
@@ -407,25 +599,105 @@ class DataPreviewDialog(QDialog):
             "评论时间",
             "弹幕内容",
             "字幕内容",
+            "标签",
             "标题",
             "简介",
             "热搜词",
         }
-        self._stretch_column_indexes = [
+        self._preferred_stretch_indexes = [
             index
             for index, header in enumerate(headers)
             if header in stretch_headers
         ]
-
-        if not self._stretch_column_indexes and headers:
-            self._stretch_column_indexes = [len(headers) - 1]
-
-        self._apply_preview_column_widths()
+        self._apply_column_visibility()
+        self._apply_row_wrapping()
 
         if self._populate_video_overview(raw_headers, rows):
             self.table.hide()
-            self.detail_button.hide()
+            self.filter_edit.hide()
+            self.key_columns_only.hide()
+            self.row_button.hide()
             self.row_hint.hide()
+            self.open_video_button.hide()
+        else:
+            self._fit_height_to_rows()
+
+    def _apply_column_visibility(self, key_only=False):
+        """默认显示全部列；勾选「只显示关键列」时才收起后面的列。"""
+        if not hasattr(self, "preview_model"):
+            return
+
+        total = self.preview_model.columnCount()
+        visible_count = min(total, TABLE_COLUMN_LIMIT) if key_only else total
+
+        for index in range(total):
+            self.table.setColumnHidden(index, index >= visible_count)
+
+        visible = set(range(visible_count))
+        stretch = [
+            index
+            for index in self._preferred_stretch_indexes
+            if index in visible
+        ]
+
+        if not stretch and visible_count:
+            stretch = [visible_count - 1]
+
+        self._stretch_column_indexes = stretch
+        self._columns_user_resized = False
+        self._apply_preview_column_widths()
+
+    def _fit_height_to_rows(self):
+        """行数不多时把窗口高度收到内容大小，避免大片空白。"""
+        rows = self.preview_model.rowCount()
+
+        if not rows or rows > 20:
+            return
+
+        row_height = self.table.verticalHeader().defaultSectionSize()
+        body = 0
+
+        for index in range(rows):
+            body += max(row_height, self.table.sizeHintForRow(index))
+
+        target = max(320, 240 + body)
+
+        if target < self.height():
+            self.resize(self.width(), target)
+
+    def _apply_row_wrapping(self):
+        """行数少时长文本换行显示完整内容，行数多时保持单行定高。"""
+        wrap = self.preview_model.rowCount() <= WRAP_ROW_LIMIT
+        header = self.table.verticalHeader()
+
+        self.table.setWordWrap(wrap)
+
+        if wrap:
+            header.setSectionResizeMode(
+                QHeaderView.ResizeMode.ResizeToContents
+            )
+        else:
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            header.setDefaultSectionSize(30)
+
+    def _apply_filter(self, text):
+        if not hasattr(self, "preview_model"):
+            return
+
+        shown = self.preview_model.set_filter(text)
+
+        if shown == self._total_rows:
+            self.row_hint.setText(self._base_row_hint)
+        else:
+            self.row_hint.setText(
+                f"筛选出 {shown} / {self._total_rows} 行"
+            )
+
+        self._update_open_video_state()
+
+    def _handle_section_resized(self, index, old_size, new_size):
+        if not self._applying_widths:
+            self._columns_user_resized = True
 
     def _sort_preview(self, column):
         header = self.table.horizontalHeader()
@@ -461,29 +733,13 @@ class DataPreviewDialog(QDialog):
                 if header == "ctime":
                     timestamp = float(numeric_text)
                 else:
-                    timestamp = datetime.fromisoformat(
-                        text.replace("Z", "+00:00")
-                    ).timestamp()
+                    timestamp = datetime.fromisoformat(text).timestamp()
 
                 return (0, 0.0, timestamp)
             except (ValueError, OSError):
                 pass
 
         return (1, 0.0, text.casefold())
-
-    def _detect_search_keyword(self):
-        if self.path.name == "hot_list.csv":
-            return None
-
-        parent = self.path.parent
-
-        if parent.parent.name == "search":
-            return parent.name
-
-        if parent.parent.parent.name == "hot-search":
-            return parent.name
-
-        return None
 
     def _prioritize_columns(self, raw_headers, headers, rows):
         if "play_count" in raw_headers and "title" in raw_headers:
@@ -533,8 +789,17 @@ class DataPreviewDialog(QDialog):
         ):
             return 60
 
+        # 时间列要放得下 "2025-09-30 22:40"，窄了会被省略号截掉
+        if header in {"评论时间", "发布时间"}:
+            return 150
+
+        if header in {"用户", "作者", "UP 主", "UP主"}:
+            return 130
+
         if header in {
             "图片地址",
+            "封面地址",
+            "标签",
             "结果文件",
             "开始时间",
             "结束时间",
@@ -544,7 +809,7 @@ class DataPreviewDialog(QDialog):
         return max(90, min(180, len(str(header)) * 16 + 36))
 
     def _apply_preview_column_widths(self):
-        if not self._base_column_widths:
+        if not self._base_column_widths or self._columns_user_resized:
             return
 
         base_widths = self._base_column_widths
@@ -575,13 +840,121 @@ class DataPreviewDialog(QDialog):
                 extra_width - distributed
             )
 
-        for index, width in enumerate(widths):
-            if self.table.columnWidth(index) != width:
-                self.table.setColumnWidth(index, width)
+        self._applying_widths = True
+
+        try:
+            for index, width in enumerate(widths):
+                if self.table.columnWidth(index) != width:
+                    self.table.setColumnWidth(index, width)
+        finally:
+            self._applying_widths = False
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         QTimer.singleShot(0, self._apply_preview_column_widths)
+
+    def _handle_cell_double_click(self, index):
+        if not index.isValid():
+            return
+
+        header = self.preview_model.headers[index.column()]
+
+        if header == "封面地址":
+            self._open_cover_for_index(index)
+            return
+
+        if (
+            self.bvid_column is not None
+            and header in {"视频编号", "标题"}
+            and self._open_video_for_row(index.row())
+        ):
+            return
+
+        self._show_cell_detail(index)
+
+    def _handle_cell_click(self, index):
+        if self._is_cover_index(index):
+            self._open_cover_for_index(index)
+
+    def _update_link_cursor(self, index):
+        if self._is_cover_index(index):
+            self.table.viewport().setCursor(
+                Qt.CursorShape.PointingHandCursor
+            )
+        else:
+            self.table.viewport().unsetCursor()
+
+    def _is_cover_index(self, index):
+        return (
+            self.cover_column is not None
+            and index.isValid()
+            and index.column() == self.cover_column
+        )
+
+    def _open_cover_for_index(self, index):
+        if not self._is_cover_index(index):
+            return False
+
+        url = self.preview_model.full_value(
+            index.row(),
+            index.column(),
+        ).strip()
+
+        if not url.startswith(("http://", "https://")):
+            return False
+
+        now = time.monotonic()
+
+        if (
+            url == self._last_cover_open[1]
+            and now - self._last_cover_open[0] < 0.5
+        ):
+            return True
+
+        self._last_cover_open = (now, url)
+        QDesktopServices.openUrl(QUrl(url))
+        return True
+
+    def _update_open_video_state(self, *_):
+        current = self.table.currentIndex()
+        enabled = (
+            self.bvid_column is not None
+            and current.isValid()
+            and bool(self._bvid_for_row(current.row()))
+        )
+        self.open_video_button.setEnabled(enabled)
+
+    def _open_selected_video(self):
+        current = self.table.currentIndex()
+
+        if current.isValid():
+            self._open_video_for_row(current.row())
+
+    def _open_video_for_row(self, row):
+        bvid = self._bvid_for_row(row)
+
+        if not bvid:
+            return False
+
+        QDesktopServices.openUrl(
+            QUrl(f"https://www.bilibili.com/video/{bvid}")
+        )
+        return True
+
+    def _bvid_for_row(self, row):
+        if (
+            self.bvid_column is None
+            or row < 0
+            or row >= self.preview_model.rowCount()
+        ):
+            return ""
+
+        bvid = self.preview_model.full_value(
+            row,
+            self.bvid_column,
+        ).strip()
+
+        return bvid if re.fullmatch(r"BV[0-9A-Za-z]+", bvid) else ""
 
     def _show_cell_detail(self, index=None):
         if index is None or not index.isValid():
@@ -601,17 +974,39 @@ class DataPreviewDialog(QDialog):
             Qt.ItemDataRole.ToolTipRole,
         )
         full_text = str(value or "").replace(r"\n", "\n")
+        self._show_text_dialog(f"{header} - 完整内容", full_text)
 
+    def _show_row_detail(self):
+        """列出选中行的全部字段，弥补表格只显示关键列。"""
+        index = self.table.currentIndex()
+
+        if not index.isValid():
+            QMessageBox.information(
+                self,
+                "查看整行",
+                "请先在表格中选择一行。",
+            )
+            return
+
+        headers = self.preview_model.raw_headers
+        values = self.preview_model.full_row(index.row())
+        lines = [
+            f"{COLUMN_LABELS.get(header, header)}：{value}"
+            for header, value in zip(headers, values)
+        ]
+        self._show_text_dialog("整行内容", "\n".join(lines))
+
+    def _show_text_dialog(self, title, text):
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"{header} - 完整内容")
-        dialog.resize(720, 460)
+        dialog.setWindowTitle(title)
+        dialog.resize(*self._detail_dialog_size(text))
         dialog.setStyleSheet(APP_STYLE)
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        editor = QPlainTextEdit(full_text)
+        editor = QPlainTextEdit(text)
         editor.setObjectName("FullContentEdit")
         editor.setReadOnly(True)
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -627,23 +1022,44 @@ class DataPreviewDialog(QDialog):
         layout.addLayout(actions)
         dialog.exec()
 
+    @staticmethod
+    def _detail_dialog_size(text):
+        lines = text.splitlines() or [""]
+        line_count = len(lines)
+        longest_line = max(len(line) for line in lines)
+
+        if line_count <= 3 and longest_line <= 80:
+            width = min(620, max(320, longest_line * 10 + 100))
+            height = max(168, 110 + line_count * 26)
+            return width, height
+
+        return 720, 460
+
     def _load_csv(self):
         rows = []
+        truncated = False
 
         with open(self.path, "r", newline="", encoding="utf-8-sig") as file:
-            content = file.read().replace("\x00", "")
+            reader = csv.DictReader(file)
+            raw_headers = reader.fieldnames or []
+            headers = [
+                COLUMN_LABELS.get(header, header)
+                for header in raw_headers
+            ]
 
-        reader = csv.DictReader(io.StringIO(content))
-        raw_headers = reader.fieldnames or []
-        headers = [
-            COLUMN_LABELS.get(header, header)
-            for header in raw_headers
-        ]
+            for row in reader:
+                if len(rows) >= PREVIEW_ROW_LIMIT:
+                    truncated = True
+                    break
 
-        for row in reader:
-            rows.append([row.get(header, "") for header in raw_headers])
+                rows.append(
+                    [
+                        str(row.get(header) or "").replace("\x00", "")
+                        for header in raw_headers
+                    ]
+                )
 
-        return raw_headers, headers, rows
+        return raw_headers, headers, rows, truncated
 
     def _load_json(self):
         with open(self.path, "r", encoding="utf-8") as file:
@@ -657,16 +1073,24 @@ class DataPreviewDialog(QDialog):
             body = subtitle.get("body") or []
             raw_headers = ["序号", "开始", "结束", "字幕内容"]
             headers = ["序号", "开始时间", "结束时间", "字幕内容"]
-            rows = [
-                [
-                    index,
-                    item.get("from", 0),
-                    item.get("to", 0),
-                    item.get("content", ""),
-                ]
-                for index, item in enumerate(body, start=1)
-            ]
-            return raw_headers, headers, rows
+            rows = []
+            truncated = False
+
+            for index, item in enumerate(body, start=1):
+                if len(rows) >= PREVIEW_ROW_LIMIT:
+                    truncated = True
+                    break
+
+                rows.append(
+                    [
+                        index,
+                        item.get("from", 0),
+                        item.get("to", 0),
+                        item.get("content", ""),
+                    ]
+                )
+
+            return raw_headers, headers, rows, truncated
 
         if isinstance(data, dict):
             raw_headers = list(data.keys())
@@ -690,7 +1114,40 @@ class DataPreviewDialog(QDialog):
             headers = ["字段", "内容"]
             rows = []
 
-        return raw_headers, headers, rows
+        return raw_headers, headers, rows, False
+
+    def _load_srt(self):
+        """把 SRT 字幕拆成序号/开始/结束/内容四列。"""
+        raw_headers = ["序号", "开始", "结束", "字幕内容"]
+        headers = ["序号", "开始时间", "结束时间", "字幕内容"]
+        rows = []
+        truncated = False
+        text = self.path.read_text(encoding="utf-8-sig", errors="replace")
+
+        for block in re.split(r"\r?\n\s*\r?\n", text.strip()):
+            if len(rows) >= PREVIEW_ROW_LIMIT:
+                truncated = True
+                break
+
+            lines = [line for line in block.splitlines() if line.strip()]
+
+            if len(lines) < 3:
+                continue
+
+            match = re.match(
+                r"(.+?)\s*-->\s*(.+)",
+                lines[1],
+            )
+            start, end = (
+                (match.group(1).strip(), match.group(2).strip())
+                if match
+                else ("", "")
+            )
+            rows.append(
+                [len(rows) + 1, start, end, "\n".join(lines[2:])]
+            )
+
+        return raw_headers, headers, rows, truncated
 
     def _populate_video_overview(self, raw_headers, rows):
         if self.path.name != "video_info.json" or not rows:
@@ -731,12 +1188,21 @@ class DataPreviewDialog(QDialog):
         layout.setHorizontalSpacing(16)
         layout.setVerticalSpacing(10)
 
+        # 标题单独占一整行，避免长标题被列宽切掉
+        title_label = QLabel("视频标题")
+        title_label.setObjectName("VideoInfoLabel")
+        title_value = QLabel(str(video_info.get("title") or "未知"))
+        title_value.setObjectName("VideoInfoValue")
+        title_value.setWordWrap(True)
+        title_value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(title_label, 0, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(title_value, 0, 1, 1, 3)
+
         rows = [
             [
-                ("视频标题", video_info.get("title") or "未知"),
                 ("UP 主", video_info.get("up_name") or "未知"),
-            ],
-            [
                 (
                     "发布时间",
                     format_preview_value(
@@ -745,23 +1211,29 @@ class DataPreviewDialog(QDialog):
                     )
                     or "未知",
                 ),
+            ],
+            [
                 ("播放量", format_number(video_info.get("view"))),
-            ],
-            [
                 ("点赞", format_number(video_info.get("like"))),
+            ],
+            [
                 ("评论", format_number(video_info.get("reply"))),
-            ],
-            [
                 ("收藏", format_number(video_info.get("favorite"))),
-                ("弹幕", format_number(video_info.get("danmaku"))),
             ],
             [
+                ("弹幕", format_number(video_info.get("danmaku"))),
                 ("硬币", format_number(video_info.get("coin"))),
+            ],
+            [
                 ("分享", format_number(video_info.get("share"))),
+                (
+                    "UP 主粉丝",
+                    format_number(video_info.get("up_follower_count")),
+                ),
             ],
         ]
 
-        for row_index, row in enumerate(rows):
+        for row_index, row in enumerate(rows, start=1):
             for column_index, (label_text, value_text) in enumerate(row):
                 base_column = column_index * 2
 
@@ -773,16 +1245,6 @@ class DataPreviewDialog(QDialog):
 
                 layout.addWidget(label, row_index, base_column)
                 layout.addWidget(value, row_index, base_column + 1)
-
-        follower_row = len(rows)
-        follower_label = QLabel("UP 主粉丝")
-        follower_label.setObjectName("VideoInfoLabel")
-        follower_value = QLabel(
-            format_number(video_info.get("up_follower_count"))
-        )
-        follower_value.setObjectName("VideoInfoValue")
-        layout.addWidget(follower_label, follower_row, 0)
-        layout.addWidget(follower_value, follower_row, 1, 1, 3)
 
         layout.setColumnStretch(1, 3)
         layout.setColumnStretch(3, 2)
@@ -797,7 +1259,7 @@ class DataBrowserDialog(QDialog):
 
     def __init__(self, parent=None, initial_path=None):
         super().__init__(parent)
-        self.output_dir = BASE_DIR / "output"
+        self.output_dir = OUTPUT_DIR
         self.root_dir = self.output_dir
         self.current_dir = self.root_dir
         self.browser_entries = []
@@ -806,15 +1268,12 @@ class DataBrowserDialog(QDialog):
 
         self.setWindowTitle("数据查看")
         self.resize(920, 620)
+        self.setMinimumSize(620, 400)
         self.setStyleSheet(APP_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
-
-        title = QLabel("数据查看")
-        title.setObjectName("PreviewTitle")
-        layout.addWidget(title)
 
         self.path_label = QLabel()
         self.path_label.setObjectName("PreviewMeta")
@@ -854,18 +1313,14 @@ class DataBrowserDialog(QDialog):
         self.browser_table.horizontalHeader().sectionClicked.connect(
             self._sort_browser
         )
-        self.browser_table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.ResizeMode.Stretch,
+        browser_header = self.browser_table.horizontalHeader()
+        browser_header.setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
         )
-        self.browser_table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.browser_table.horizontalHeader().setSectionResizeMode(
-            2,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
+        browser_header.setStretchLastSection(False)
+        self.browser_table.setColumnWidth(0, 380)
+        self.browser_table.setColumnWidth(1, 260)
+        self.browser_table.setColumnWidth(2, 150)
         self.browser_table.cellDoubleClicked.connect(
             lambda row, column: self._activate_row(row)
         )
@@ -887,9 +1342,7 @@ class DataBrowserDialog(QDialog):
 
         actions = QHBoxLayout()
         self.parent_button = QPushButton("返回")
-        self.parent_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
-        )
+        self.parent_button.setIcon(icon("icon-up.svg"))
         self.parent_button.clicked.connect(self._go_parent)
         actions.addWidget(self.parent_button)
 
@@ -934,7 +1387,7 @@ class DataBrowserDialog(QDialog):
                 DataPreviewDialog(
                     data_file,
                     self,
-                    display_name=self._friendly_file_name(data_file),
+                    display_name=friendly_file_name(data_file),
                 ).exec()
                 return
 
@@ -953,7 +1406,10 @@ class DataBrowserDialog(QDialog):
 
             if path.is_dir():
                 child_directories.append(path)
-            elif path.suffix.lower() in {".csv", ".json"}:
+            elif (
+                path.suffix.lower() in BROWSABLE_SUFFIXES
+                and not is_subtitle_json(path)
+            ):
                 data_files.append(path)
 
         if len(data_files) == 1 and not child_directories:
@@ -968,6 +1424,7 @@ class DataBrowserDialog(QDialog):
                     path
                     for path in self.current_dir.iterdir()
                     if path.name not in {".git", "__pycache__"}
+                    and not is_subtitle_json(path)
                 ),
                 key=self._browser_sort_key,
             )
@@ -987,10 +1444,10 @@ class DataBrowserDialog(QDialog):
 
         for row, path in enumerate(paths):
             if path.is_dir():
-                name = self._friendly_folder_name(path.name)
+                name = friendly_video_name(path.name)
                 summary = self._directory_summary(path)
             else:
-                name = self._friendly_file_name(path)
+                name = friendly_file_name(path)
                 summary = self._file_summary(path)
 
             try:
@@ -1078,11 +1535,11 @@ class DataBrowserDialog(QDialog):
             self._navigate_to(path)
             return
 
-        if path.suffix.lower() in {".csv", ".json"}:
+        if path.suffix.lower() in BROWSABLE_SUFFIXES:
             DataPreviewDialog(
                 path,
                 self,
-                display_name=self._friendly_file_name(path),
+                display_name=friendly_file_name(path),
             ).exec()
             return
 
@@ -1113,90 +1570,42 @@ class DataBrowserDialog(QDialog):
         if not self.output_dir.exists():
             return
 
-        root_item = QTreeWidgetItem(
-            ["output", str(self._count_data_files(self.output_dir))]
-        )
+        root_item = QTreeWidgetItem(["output", "0"])
         root_item.setData(0, Qt.ItemDataRole.UserRole, str(self.output_dir))
         self.directory_tree.addTopLevelItem(root_item)
-        self._add_tree_children(root_item, self.output_dir)
+        root_count = self._add_tree_children(root_item, self.output_dir)
+        root_item.setText(1, str(root_count))
         root_item.setExpanded(True)
 
     def _add_tree_children(self, parent_item, directory):
+        total_files = 0
+
         for path in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
+            if (
+                path.is_file()
+                and path.suffix.lower() in BROWSABLE_SUFFIXES
+                and not is_subtitle_json(path)
+            ):
+                total_files += 1
+                continue
+
             if not path.is_dir() or path.name == "__pycache__":
                 continue
 
-            item = QTreeWidgetItem(
-                [path.name, str(self._count_data_files(path))]
-            )
+            item = QTreeWidgetItem([path.name, "0"])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             parent_item.addChild(item)
-            self._add_tree_children(item, path)
+            child_files = self._add_tree_children(item, path)
+            item.setText(1, str(child_files))
+            total_files += child_files
+
+        return total_files
 
     def _open_tree_directory(self, item):
         path_text = item.data(0, Qt.ItemDataRole.UserRole)
 
         if path_text:
             self._navigate_to(Path(path_text))
-
-    def _friendly_folder_name(self, name):
-        parts = name.rsplit("_", 1)
-
-        if len(parts) != 2 or not parts[1].startswith("BV"):
-            return name
-
-        base_name = parts[0]
-
-        if "_" in base_name:
-            up_name, title = base_name.split("_", 1)
-            return f"{title} · {up_name}"
-
-        return base_name
-
-    def _friendly_file_name(self, path):
-        filename = path.name
-
-        if filename == "video_info.json":
-            return "视频概览"
-
-        if filename.startswith("comments_"):
-            return "评论"
-
-        if filename.startswith("danmaku_"):
-            match = re.search(r"_p(\d+)\.csv$", filename)
-            return f"弹幕 P{match.group(1)}" if match else "弹幕"
-
-        if filename.startswith("subtitle_"):
-            match = re.search(r"_p(\d+)_(.+)\.json$", filename)
-
-            if match:
-                return f"字幕 P{match.group(1)} · {match.group(2)}"
-
-            return "字幕"
-
-        if filename == "hot_list.csv":
-            return "热搜汇总"
-
-        if filename.startswith("search_"):
-            keyword = path.parent.name
-            parts = path.stem.rsplit("_", 1)
-            count_text = ""
-
-            if len(parts) == 2 and parts[1].isdigit():
-                count_text = f" · {parts[1]} 条"
-
-            return f"搜索结果 · {keyword}{count_text}"
-
-        if filename.startswith("videos_"):
-            parts = path.stem.rsplit("_", 1)
-            count_text = ""
-
-            if len(parts) == 2 and parts[1].isdigit():
-                count_text = f" · {parts[1]} 条"
-
-            return f"UP 主视频{count_text}"
-
-        return path.stem
 
     def _directory_summary(self, path):
         child_dirs = 0
@@ -1206,7 +1615,10 @@ class DataBrowserDialog(QDialog):
             for child in path.iterdir():
                 if child.is_dir():
                     child_dirs += 1
-                elif child.suffix.lower() in {".csv", ".json"}:
+                elif (
+                    child.suffix.lower() in BROWSABLE_SUFFIXES
+                    and not is_subtitle_json(child)
+                ):
                     direct_files += 1
         except OSError:
             return "无法读取"
@@ -1228,18 +1640,6 @@ class DataBrowserDialog(QDialog):
             size_text = f"{size / 1024:.1f} KB"
 
         return f"{path.suffix.removeprefix('.').upper()} · {size_text}"
-
-    def _count_data_files(self, directory):
-        count = 0
-
-        try:
-            for path in directory.rglob("*"):
-                if path.is_file() and path.suffix.lower() in {".csv", ".json"}:
-                    count += 1
-        except OSError:
-            return 0
-
-        return count
 
     def _friendly_time(self, timestamp):
         value = datetime.fromtimestamp(timestamp)

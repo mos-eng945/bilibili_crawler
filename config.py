@@ -1,9 +1,22 @@
 """项目级默认配置和通用参数解析。"""
 
 import argparse
+from pathlib import Path
 
 
+BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_BVID = "BV1UT42167xb"
+
+
+class ParsedPageRange(tuple):
+    """记录页码范围是否显式填写了结束页。"""
+
+    has_explicit_end: bool
+
+    def __new__(cls, start, end, has_explicit_end):
+        instance = super().__new__(cls, (start, end))
+        instance.has_explicit_end = has_explicit_end
+        return instance
 
 
 def parse_page_range(value):
@@ -21,5 +34,19 @@ def parse_page_range(value):
 
     if start < 1 or end < start:
         raise argparse.ArgumentTypeError("页码必须满足 1 <= START <= END")
+
+    return ParsedPageRange(start, end, len(parts) == 2)
+
+
+def resolve_search_page_range(value):
+    """解析关键词搜索页范围，单值 N 表示第 1 到第 N 页。"""
+    if value is None:
+        return 1, 1
+
+    start, end = value
+    has_explicit_end = getattr(value, "has_explicit_end", True)
+
+    if not has_explicit_end:
+        return 1, end
 
     return start, end

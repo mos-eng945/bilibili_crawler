@@ -8,6 +8,7 @@ from PySide6.QtCore import (
     QProcess,
     QProcessEnvironment,
     QRectF,
+    QSettings,
     QSize,
     QTimer,
     Qt,
@@ -16,15 +17,16 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QDesktopServices,
     QFont,
+    QFontMetrics,
     QIcon,
     QPainter,
     QPainterPath,
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QButtonGroup,
     QComboBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -39,20 +41,41 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from bilibili_api import BASE_DIR
 from crawler_common import SEARCH_DEFAULT_WORKERS, SEARCH_MAX_WORKERS
-from config import DEFAULT_BVID, parse_page_range
+from config import (
+    BASE_DIR,
+    DEFAULT_BVID,
+    parse_page_range,
+)
+from output_paths import (
+    OUTPUT_DIR,
+    find_user_dir,
+    hot_project_dir,
+    latest_search_keyword,
+    latest_user_mid,
+    search_project_dir,
+    video_project_dir,
+)
 from qt_ui.dialogs import CompletionDialog, DataBrowserDialog
-from qt_ui.theme import APP_STYLE
+from qt_ui.formatting import friendly_video_name
+from qt_ui.theme import APP_STYLE, icon
 
 BVID_PATTERN = re.compile(r"^BV[0-9A-Za-z]+$")
 LOGIN_PROMPT = "登录完成后按回车"
+SETTINGS_ORGANIZATION = "BilibiliDataCrawler"
+SETTINGS_APPLICATION = "BilibiliDataCrawler"
+VIDEO_ACTION_FLAGS = {
+    "info": "-i",
+    "comments": "-c",
+    "subtitles": "-s",
+    "danmaku": "-d",
+    "all": "-a",
+}
 
 
 class MainWindow(QMainWindow):
@@ -66,13 +89,21 @@ class MainWindow(QMainWindow):
         self._scan_buffer = ""
         self._task_title = ""
         self._task_page = 0
+        self._task_has_output = False
         self._start_buttons = []
         self._nav_buttons = []
         self._project_data_panels = []
-        self._recent_cache = None
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(2000)
-        self._refresh_timer.timeout.connect(self._refresh_recent_outputs)
+        self._refresh_timer.setInterval(5000)
+        self._refresh_timer.timeout.connect(self._refresh_project_data)
+
+        # 输入框每敲一个字都会 textChanged；这里合并成一次，避免逐键遍历磁盘
+        self._project_refresh_timer = QTimer(self)
+        self._project_refresh_timer.setSingleShot(True)
+        self._project_refresh_timer.setInterval(200)
+        self._project_refresh_timer.timeout.connect(
+            self._refresh_project_data
+        )
 
         self.setWindowTitle("Bilibili 数据采集器")
         self.setWindowIcon(self._app_icon())
@@ -82,6 +113,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._update_video_controls()
+        self._restore_settings()
+        self._refresh_project_data()
 
     def _build_ui(self):
         root = QWidget()
@@ -127,14 +160,8 @@ class MainWindow(QMainWindow):
             "登录状态",
             "待检查",
         )
-        data_card, self.metric_data_value = self._make_metric_card(
-            "数据文件",
-            "0",
-        )
-        data_card.setFixedWidth(230)
         self.metric_strip.addWidget(status_card)
         self.metric_strip.addWidget(login_card)
-        self.metric_strip.addWidget(data_card)
         workspace_layout.addLayout(self.metric_strip)
 
         self.pages = QStackedWidget()
@@ -154,7 +181,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.progress, 1)
         self.statusBar().showMessage("就绪")
         self._switch_page(0)
-        self._refresh_recent_outputs()
+        self._refresh_project_data()
 
     def _load_rounded_pixmap(self, filename, size, radius):
         source = QPixmap(str(BASE_DIR / "assets" / filename))
@@ -229,9 +256,7 @@ class MainWindow(QMainWindow):
 
         self.login_button = QPushButton("检查登录")
         self.login_button.setObjectName("HeaderButton")
-        self.login_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
-        )
+        self.login_button.setIcon(icon("icon-check.svg"))
         self.login_button.clicked.connect(self._check_login)
         layout.addWidget(self.login_button)
 
@@ -240,7 +265,7 @@ class MainWindow(QMainWindow):
     def _build_sidebar_rail(self):
         rail = QWidget()
         rail.setObjectName("SidebarRail")
-        rail.setFixedWidth(20)
+        rail.setFixedWidth(26)
 
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(0, 8, 0, 8)
@@ -248,10 +273,11 @@ class MainWindow(QMainWindow):
 
         self.sidebar_toggle = QPushButton()
         self.sidebar_toggle.setObjectName("RailButton")
-        self.sidebar_toggle.setFixedSize(20, 38)
-        self.sidebar_toggle.setText("‹")
+        self.sidebar_toggle.setFixedSize(26, 46)
+        self.sidebar_toggle.setIcon(icon("icon-chevron-left.svg"))
+        self.sidebar_toggle.setIconSize(QSize(12, 12))
         self.sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sidebar_toggle.setToolTip("隐藏导航")
+        self.sidebar_toggle.setToolTip("收起导航")
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
         layout.addWidget(self.sidebar_toggle, 0, Qt.AlignmentFlag.AlignTop)
         layout.addStretch(1)
@@ -281,6 +307,15 @@ class MainWindow(QMainWindow):
         ]
 
         for index, text in enumerate(nav_items):
+            if text == "运行日志":
+                # 「打开目录」是动作不是页面，放在日志页上面
+                open_dir_button = QPushButton("打开目录")
+                open_dir_button.setObjectName("NavButton")
+                open_dir_button.setFixedHeight(48)
+                open_dir_button.setToolTip("用资源管理器打开 output 目录")
+                open_dir_button.clicked.connect(self._open_output_dir)
+                layout.addWidget(open_dir_button)
+
             button = QPushButton(text)
             button.setObjectName("NavButton")
             button.setCheckable(True)
@@ -331,18 +366,19 @@ class MainWindow(QMainWindow):
         self.sidebar.setVisible(not visible)
 
         if visible:
-            self.sidebar_toggle.setText("›")
-            self.sidebar_toggle.setToolTip("显示导航")
+            self.sidebar_toggle.setIcon(icon("icon-chevron-right.svg"))
+            self.sidebar_toggle.setToolTip("展开导航")
         else:
-            self.sidebar_toggle.setText("‹")
-            self.sidebar_toggle.setToolTip("隐藏导航")
+            self.sidebar_toggle.setIcon(icon("icon-chevron-left.svg"))
+            self.sidebar_toggle.setToolTip("收起导航")
 
     def _build_command_group(self):
         group = QGroupBox("执行计划")
         group.setMaximumHeight(270)
 
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(14, 18, 14, 12)
+        # 与其它分组框保持同一内容左边距
+        layout.setContentsMargins(16, 18, 16, 0)
         layout.setSpacing(6)
 
         summary = QLabel("等待参数")
@@ -368,11 +404,7 @@ class MainWindow(QMainWindow):
         preview.setMaximumHeight(82)
         preview.hide()
 
-        font = QFont("Cascadia Mono")
-        if not font.exactMatch():
-            font = QFont("Consolas")
-        font.setPointSize(9)
-        preview.setFont(font)
+        preview.setFont(self._mono_font(9))
 
         layout.addWidget(preview)
 
@@ -390,161 +422,6 @@ class MainWindow(QMainWindow):
         toggle.toggled.connect(toggle_command)
         return group, summary, preview
 
-    def _recent_output_entries(self, refresh=False):
-        if self._recent_cache is not None and not refresh:
-            return self._recent_cache
-
-        output_dir = BASE_DIR / "output"
-        entries = []
-
-        if not output_dir.exists():
-            self._recent_cache = entries
-            return entries
-
-        ignored = {"search", "playwright", "wireshark"}
-
-        for path in output_dir.iterdir():
-            if not path.is_dir() or path.name in ignored:
-                continue
-
-            try:
-                modified_at = path.stat().st_mtime
-            except OSError:
-                continue
-
-            video_name = self._friendly_video_output_name(path.name)
-            file_entries = []
-
-            for file_path in path.iterdir():
-                if not file_path.is_file():
-                    continue
-
-                suffix = file_path.suffix.lower()
-
-                if suffix not in {".csv", ".json"}:
-                    continue
-
-                try:
-                    file_modified_at = file_path.stat().st_mtime
-                except OSError:
-                    continue
-
-                file_entries.append(
-                    (
-                        file_modified_at,
-                        file_path,
-                        self._friendly_video_file_name(file_path, video_name),
-                    )
-                )
-
-            if file_entries:
-                for file_modified_at, file_path, display in file_entries:
-                    entries.append(
-                        {
-                            "type": "视频",
-                            "name": file_path.name,
-                            "display": display,
-                            "time": file_modified_at,
-                            "path": file_path,
-                        }
-                    )
-            else:
-                entries.append(
-                    {
-                        "type": "视频",
-                        "name": path.name,
-                        "display": video_name,
-                        "time": modified_at,
-                        "path": path,
-                    }
-                )
-
-        search_dir = output_dir / "search"
-
-        if search_dir.exists():
-            for path in search_dir.rglob("*.csv"):
-                if not path.is_file():
-                    continue
-
-                try:
-                    modified_at = path.stat().st_mtime
-                except OSError:
-                    continue
-
-                entries.append(
-                    {
-                        "type": "搜索",
-                        "name": path.stem,
-                        "display": self._friendly_search_output_name(path),
-                        "time": modified_at,
-                        "path": path,
-                    }
-                )
-
-        entries.sort(key=lambda item: item["time"], reverse=True)
-        self._recent_cache = entries
-        return self._recent_cache
-
-    def _friendly_video_output_name(self, folder_name):
-        parts = folder_name.rsplit("_", 1)
-
-        if len(parts) != 2 or not parts[1].startswith("BV"):
-            return folder_name
-
-        base_name = parts[0]
-
-        if "_" in base_name:
-            up_name, title = base_name.split("_", 1)
-            return f"{title} · {up_name}"
-
-        return base_name
-
-    def _friendly_video_file_name(self, path, video_name):
-        filename = path.name
-
-        if filename == "video_info.json":
-            label = "视频概览"
-        elif filename.startswith("comments_"):
-            label = "评论"
-        elif filename.startswith("danmaku_"):
-            match = re.search(r"_p(\d+)\.csv$", filename)
-            label = f"弹幕 P{match.group(1)}" if match else "弹幕"
-        elif filename.startswith("subtitle_"):
-            match = re.search(r"_p(\d+)_(.+)\.json$", filename)
-
-            if match:
-                label = f"字幕 P{match.group(1)} · {match.group(2)}"
-            else:
-                label = "字幕"
-        else:
-            label = path.stem
-
-        return f"{label} · {video_name}"
-
-    def _friendly_search_output_name(self, path):
-        if path.name == "hot_list.csv":
-            return "热搜汇总"
-
-        keyword = path.parent.name
-        count_text = ""
-        parts = path.stem.rsplit("_", 1)
-
-        if len(parts) == 2 and parts[1].isdigit():
-            count_text = f" · {parts[1]} 条"
-
-        if path.parent.parent.name == "up":
-            return f"UP 视频 · {keyword}{count_text}"
-
-        return f"{keyword}{count_text}"
-
-    def _refresh_recent_outputs(self):
-        entries = self._recent_output_entries(refresh=True)
-
-        if hasattr(self, "metric_data_value"):
-            self.metric_data_value.setText(f"{len(entries)}")
-
-        self._refresh_project_data()
-
     def _build_project_data_panel(self, kind):
         titles = {
             "video": "当前视频数据",
@@ -557,9 +434,9 @@ class MainWindow(QMainWindow):
         group.setFixedWidth(230)
 
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(14, 16, 14, 12)
-        layout.setSpacing(9)
-        layout.addStretch(1)
+        # 横向/顶部与左侧参数框对齐，底部不叠加，避免多出一块空白
+        layout.setContentsMargins(16, 16, 16, 0)
+        layout.setSpacing(8)
 
         count = QLabel("暂无数据")
         count.setObjectName("SideOutputCount")
@@ -567,20 +444,8 @@ class MainWindow(QMainWindow):
 
         path = QLabel("等待采集")
         path.setObjectName("OutputPath")
-        path.setWordWrap(True)
+        path.setWordWrap(False)
         layout.addWidget(path)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-
-        open_button = QPushButton("打开目录")
-        open_button.setEnabled(False)
-        open_button.clicked.connect(
-            lambda checked=False, panel_kind=kind: (
-                self._open_project_directory(panel_kind)
-            )
-        )
-        actions.addWidget(open_button)
 
         data_button = QPushButton("查看数据")
         data_button.setEnabled(False)
@@ -589,8 +454,7 @@ class MainWindow(QMainWindow):
                 self._show_project_data(panel_kind)
             )
         )
-        actions.addWidget(data_button)
-        layout.addLayout(actions)
+        layout.addWidget(data_button)
         layout.addStretch(1)
 
         self._project_data_panels.append(
@@ -598,60 +462,187 @@ class MainWindow(QMainWindow):
                 "kind": kind,
                 "count": count,
                 "path": path,
-                "open_button": open_button,
                 "data_button": data_button,
             }
         )
         return group
 
     def _current_project_path(self, kind):
-        output_dir = BASE_DIR / "output"
-
         if kind == "video":
             bvid = self.bvid_edit.text().strip() or DEFAULT_BVID
-
-            if not output_dir.exists():
-                return None
-
-            matches = [
-                path
-                for path in output_dir.iterdir()
-                if path.is_dir() and path.name.endswith(f"_{bvid}")
-            ]
-            return self._newest_path(matches)
+            return video_project_dir(bvid)
 
         if kind == "search":
-            keyword = self.keyword_edit.text().strip()
-
-            if not keyword:
-                return None
-
-            path = output_dir / "search" / keyword
-            return path if path.exists() else None
+            return search_project_dir(self.keyword_edit.text().strip())
 
         if kind == "user":
-            mid = self.mid_edit.text().strip()
+            return find_user_dir(self.mid_edit.text().strip())
 
-            if not mid:
-                return None
+        return hot_project_dir()
 
-            path = output_dir / "search" / "up" / mid
-            return path if path.exists() else None
-
-        hot_root = output_dir / "search" / "hot-search"
-
-        if not hot_root.exists():
-            return None
-
-        runs = [path for path in hot_root.iterdir() if path.is_dir()]
-        return self._newest_path(runs) or hot_root
+    def _settings(self):
+        return QSettings(
+            SETTINGS_ORGANIZATION,
+            SETTINGS_APPLICATION,
+        )
 
     @staticmethod
-    def _newest_path(paths):
-        if not paths:
-            return None
+    def _int_setting(settings, key, default):
+        """读取整数配置，兼容 QSettings.value 返回 object 的类型签名。"""
+        value = settings.value(key, default, type=int)
 
-        return max(paths, key=lambda path: path.stat().st_mtime)
+        if isinstance(value, (int, float)):
+            return int(value)
+
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _restore_settings(self):
+        settings = self._settings()
+
+        bvid = str(
+            settings.value("video/bvid", DEFAULT_BVID)
+        ).strip()
+        self.bvid_edit.setText(bvid or DEFAULT_BVID)
+
+        action = str(settings.value("video/action", "all"))
+        action_index = self.video_action.findData(action)
+
+        if action_index >= 0:
+            self.video_action.setCurrentIndex(action_index)
+
+        self.video_page_edit.setText(
+            str(settings.value("video/page_range", ""))
+        )
+        self.subtitle_language_edit.setText(
+            str(settings.value("video/language", ""))
+        )
+        comment_mode = self._int_setting(settings, "video/comment_mode", 2)
+        comment_mode_index = self.comment_mode.findData(comment_mode)
+
+        if comment_mode_index >= 0:
+            self.comment_mode.setCurrentIndex(comment_mode_index)
+
+        self.comment_page_size.setValue(
+            self._int_setting(settings, "video/comment_page_size", 30)
+        )
+
+        keyword = str(
+            settings.value("search/keyword", "")
+        ).strip()
+
+        if search_project_dir(keyword) is None:
+            keyword = latest_search_keyword()
+
+        if keyword:
+            self.keyword_edit.setText(keyword)
+
+        self.search_page_edit.setText(
+            str(settings.value("search/page_range", "1")) or "1"
+        )
+        self.search_page_size.setValue(
+            self._int_setting(settings, "search/page_size", 20)
+        )
+        self.search_workers.setValue(
+            self._int_setting(
+                settings, "search/workers", SEARCH_DEFAULT_WORKERS
+            )
+        )
+
+        mid = str(settings.value("user/mid", "")).strip()
+
+        if find_user_dir(mid) is None:
+            mid = latest_user_mid()
+
+        if mid:
+            self.mid_edit.setText(mid)
+
+        self.user_page_size.setValue(
+            self._int_setting(settings, "user/page_size", 30)
+        )
+        self.user_workers.setValue(
+            self._int_setting(
+                settings, "user/workers", SEARCH_DEFAULT_WORKERS
+            )
+        )
+
+        self.hot_limit.setValue(
+            self._int_setting(settings, "hot/limit", 10)
+        )
+        self.hot_page_size.setValue(
+            self._int_setting(settings, "hot/page_size", 20)
+        )
+        self.hot_workers.setValue(
+            self._int_setting(
+                settings, "hot/workers", SEARCH_DEFAULT_WORKERS
+            )
+        )
+
+        page_index = self._int_setting(settings, "window/page", 0)
+        self._switch_page(page_index)
+        self._refresh_project_data()
+
+    def _save_settings(self):
+        settings = self._settings()
+        settings.setValue("video/bvid", self.bvid_edit.text().strip())
+        settings.setValue(
+            "video/action",
+            self.video_action.currentData(),
+        )
+        settings.setValue(
+            "video/page_range",
+            self.video_page_edit.text().strip(),
+        )
+        settings.setValue(
+            "video/language",
+            self.subtitle_language_edit.text().strip(),
+        )
+        settings.setValue(
+            "video/comment_mode",
+            self.comment_mode.currentData(),
+        )
+        settings.setValue(
+            "video/comment_page_size",
+            self.comment_page_size.value(),
+        )
+        settings.setValue(
+            "search/keyword",
+            self.keyword_edit.text().strip(),
+        )
+        settings.setValue(
+            "search/page_range",
+            self.search_page_edit.text().strip(),
+        )
+        settings.setValue(
+            "search/page_size",
+            self.search_page_size.value(),
+        )
+        settings.setValue(
+            "search/workers",
+            self.search_workers.value(),
+        )
+        settings.setValue("user/mid", self.mid_edit.text().strip())
+        settings.setValue(
+            "user/page_size",
+            self.user_page_size.value(),
+        )
+        settings.setValue(
+            "user/workers",
+            self.user_workers.value(),
+        )
+        settings.setValue("hot/limit", self.hot_limit.value())
+        settings.setValue(
+            "hot/page_size",
+            self.hot_page_size.value(),
+        )
+        settings.setValue(
+            "hot/workers",
+            self.hot_workers.value(),
+        )
+        settings.setValue("window/page", self.pages.currentIndex())
+        settings.sync()
 
     @staticmethod
     def _count_project_files(path):
@@ -664,6 +655,10 @@ class MainWindow(QMainWindow):
             )
         except OSError:
             return 0
+
+    def _schedule_project_refresh(self, *_):
+        """输入变化时合并刷新，避免每敲一个字都去遍历 output 目录。"""
+        self._project_refresh_timer.start(200)
 
     def _refresh_project_data(self):
         if not hasattr(self, "bvid_edit"):
@@ -681,18 +676,25 @@ class MainWindow(QMainWindow):
             else:
                 panel["count"].setText("暂无数据")
 
-            panel["path"].setText(path.name if has_path else "等待采集")
+            if not has_path:
+                display_name = "等待采集"
+            elif panel["kind"] == "video":
+                # 文件夹名是 UP名_标题_BV号，太长；显示成「标题 · UP名」
+                display_name = friendly_video_name(path.name)
+            else:
+                display_name = path.name
+
+            # 面板固定 230px，路径框只留一行，长了用省略号，完整值放 tooltip
+            metrics = QFontMetrics(panel["path"].font())
+            panel["path"].setText(
+                metrics.elidedText(
+                    display_name,
+                    Qt.TextElideMode.ElideRight,
+                    180,
+                )
+            )
             panel["path"].setToolTip(str(path) if has_path else "")
-            panel["open_button"].setEnabled(has_path)
             panel["data_button"].setEnabled(has_path)
-
-    def _open_project_directory(self, kind):
-        path = self._current_project_path(kind)
-
-        if path is None or not path.exists():
-            return
-
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _show_project_data(self, kind):
         path = self._current_project_path(kind)
@@ -708,9 +710,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(14)
+        # 参数框占弹性宽度，数据面板固定宽度贴右，第一行铺满整宽
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 0)
-        layout.setRowStretch(2, 1)
+        # 参数卡片吸收多余高度，内容把整页填满，底部不留空
+        layout.setRowStretch(0, 1)
+        layout.setRowStretch(2, 0)
         return layout
 
     @staticmethod
@@ -721,9 +726,15 @@ class MainWindow(QMainWindow):
         project_data,
         start_button,
     ):
-        layout.addWidget(parameter_group, 0, 0)
-        layout.addWidget(project_data, 0, 1)
-        layout.addWidget(command_group, 1, 0, 1, 2)
+        # 参数卡片占满整行；下面一行左边执行计划、右边数据面板
+        layout.addWidget(parameter_group, 0, 0, 1, 2)
+        layout.addWidget(command_group, 1, 0)
+        layout.addWidget(
+            project_data,
+            1,
+            1,
+            Qt.AlignmentFlag.AlignTop,
+        )
         layout.addWidget(
             start_button,
             3,
@@ -733,24 +744,84 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignRight,
         )
 
+    def _assemble_task_tab(
+        self,
+        layout,
+        parameter_group,
+        kind,
+        start_text,
+        start_callback,
+    ):
+        (
+            command_group,
+            execution_summary,
+            command_preview,
+        ) = self._build_command_group()
+        start_button = self._make_start_button(start_text, start_callback)
+        self._add_task_sections(
+            layout,
+            parameter_group,
+            command_group,
+            self._build_project_data_panel(kind),
+            start_button,
+        )
+        return execution_summary, command_preview
+
+    @staticmethod
+    def _make_parameter_group(title, columns=2):
+        """参数区用多列网格：一行放 `columns` 组「标签 + 控件」。"""
+        group = QGroupBox(title)
+        grid = QGridLayout(group)
+        grid.setContentsMargins(16, 16, 16, 8)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(12)
+
+        for column in range(columns):
+            grid.setColumnStretch(column * 2 + 1, 1)
+
+        return group, grid
+
+    @staticmethod
+    def _add_param(grid, row, column, text, field, span=1):
+        """把一组「标签 + 控件」放进网格，`span` 表示占几列。"""
+        label = QLabel(text)
+        grid.addWidget(label, row, column * 2)
+        grid.addWidget(
+            field,
+            row,
+            column * 2 + 1,
+            1,
+            span * 2 - 1,
+        )
+        return label
+
+    @staticmethod
+    def _balance_parameter_rows(grid):
+        """让每个「可见行」均分卡片高度，行距才不会忽大忽小。"""
+        for row in range(grid.rowCount()):
+            has_visible = any(
+                grid.itemAtPosition(row, column) is not None
+                and grid.itemAtPosition(row, column).widget() is not None
+                and grid.itemAtPosition(row, column).widget().isVisible()
+                for column in range(grid.columnCount())
+            )
+            grid.setRowStretch(row, 1 if has_visible else 0)
+
     def _build_video_tab(self):
         page = QWidget()
         layout = self._make_task_grid(page)
 
-        group = QGroupBox("采集参数")
-        group.setMaximumWidth(660)
-        form = QFormLayout(group)
-        form.setContentsMargins(16, 20, 16, 14)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(18)
+        group, grid = self._make_parameter_group("采集参数", columns=1)
+        self.video_grid = grid
+        self.video_labels = {}
 
         self.bvid_edit = QLineEdit(DEFAULT_BVID)
-        self.bvid_edit.setFixedWidth(300)
+        self.bvid_edit.setMinimumWidth(160)
         self.bvid_edit.setPlaceholderText("BV...")
-        form.addRow("视频编号", self.bvid_edit)
+        self._add_param(grid, 0, 0, "视频编号", self.bvid_edit)
 
         self.video_action = QComboBox()
-        self.video_action.setFixedWidth(300)
+        self.video_action.setMinimumWidth(160)
         self.video_action.addItem("视频概览", "info")
         self.video_action.addItem("评论", "comments")
         self.video_action.addItem("字幕", "subtitles")
@@ -763,43 +834,82 @@ class MainWindow(QMainWindow):
         self.video_action.currentIndexChanged.connect(
             self._update_video_preview
         )
-        form.addRow("采集内容", self.video_action)
+        self._add_param(grid, 1, 0, "采集内容", self.video_action)
+
+        self.comment_options = QWidget()
+        # 这一行是可纵向拉伸的容器，若不锁住会把卡片余高全吃掉、行距不均
+        self.comment_options.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        comment_options_layout = QHBoxLayout(self.comment_options)
+        comment_options_layout.setContentsMargins(0, 0, 0, 0)
+        comment_options_layout.setSpacing(8)
+
+        self.comment_mode = QComboBox()
+        self.comment_mode.setFixedWidth(190)
+        self.comment_mode.addItem("时间顺序", 2)
+        self.comment_mode.addItem("热门评论", 3)
+        self.comment_mode.currentIndexChanged.connect(
+            self._update_video_preview
+        )
+        comment_options_layout.addWidget(self.comment_mode)
+
+        self.comment_page_size = self._make_spin_box(1, 30, 30)
+        self.comment_page_size.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self.comment_page_size.setSuffix(" 条")
+        self.comment_page_size.setObjectName("CompactSpin")
+        self.comment_page_size.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        # 96px 时聚焦编辑会把数字挤出可视区，只剩后缀「条」
+        self.comment_page_size.setFixedWidth(112)
+        self.comment_page_size.setToolTip("输入 1-30")
+        self.comment_page_size.valueChanged.connect(
+            self._update_video_preview
+        )
+        comment_options_layout.addWidget(QLabel("每页"))
+        comment_options_layout.addWidget(self.comment_page_size)
+        comment_options_layout.addStretch(1)
+        self.video_labels[self.comment_options] = self._add_param(
+            grid, 2, 0, "评论设置", self.comment_options
+        )
 
         self.video_page_edit = QLineEdit()
-        self.video_page_edit.setFixedWidth(300)
+        self.video_page_edit.setMinimumWidth(160)
         self.video_page_edit.setPlaceholderText("全部，或 1,3")
         self.video_page_edit.textChanged.connect(self._update_video_preview)
-        form.addRow("分集范围", self.video_page_edit)
+        self.video_labels[self.video_page_edit] = self._add_param(
+            grid, 3, 0, "分集范围", self.video_page_edit
+        )
 
         self.subtitle_language_edit = QLineEdit()
-        self.subtitle_language_edit.setFixedWidth(300)
+        self.subtitle_language_edit.setMinimumWidth(160)
         self.subtitle_language_edit.setPlaceholderText("例如 ai-zh、zh-CN")
         self.subtitle_language_edit.textChanged.connect(
             self._update_video_preview
         )
         self.bvid_edit.textChanged.connect(self._update_video_preview)
-        self.bvid_edit.textChanged.connect(self._refresh_project_data)
-        form.addRow("字幕语言", self.subtitle_language_edit)
+        self.bvid_edit.textChanged.connect(
+            self._schedule_project_refresh
+        )
+        self.video_labels[self.subtitle_language_edit] = self._add_param(
+            grid, 4, 0, "字幕语言", self.subtitle_language_edit
+        )
 
         (
-            command_group,
             self.video_execution_summary,
             self.video_command_preview,
-        ) = self._build_command_group()
-
-        self.video_start_button = self._make_start_button(
+        ) = self._assemble_task_tab(
+            layout,
+            group,
+            "video",
             "开始采集",
             self._start_video_task,
         )
-
-        self._add_task_sections(
-            layout,
-            group,
-            command_group,
-            self._build_project_data_panel("video"),
-            self.video_start_button,
-        )
-
+        self._balance_parameter_rows(grid)
         self._update_video_preview()
         return page
 
@@ -807,63 +917,46 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = self._make_task_grid(page)
 
-        group = QGroupBox("搜索参数")
-        group.setMaximumWidth(660)
-        form = QFormLayout(group)
-        form.setContentsMargins(16, 20, 16, 14)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(18)
+        group, grid = self._make_parameter_group("搜索参数", columns=1)
 
         self.keyword_edit = QLineEdit()
-        self.keyword_edit.setFixedWidth(320)
+        self.keyword_edit.setMinimumWidth(160)
         self.keyword_edit.setPlaceholderText("输入搜索关键词")
-        form.addRow("关键词", self.keyword_edit)
+        self._add_param(grid, 0, 0, "关键词", self.keyword_edit)
 
         self.search_page_edit = QLineEdit("1")
-        self.search_page_edit.setFixedWidth(180)
-        self.search_page_edit.setPlaceholderText("1 或 1,3")
-        form.addRow("搜索页范围", self.search_page_edit)
+        self.search_page_edit.setMinimumWidth(120)
+        self.search_page_edit.setPlaceholderText("10 表示 1-10；或 1,3")
+        self._add_param(grid, 1, 0, "搜索页范围", self.search_page_edit)
 
         self.search_page_size = self._make_spin_box(1, 50, 20)
-        self.search_page_size.setFixedWidth(130)
-        form.addRow("每次读取", self.search_page_size)
+        self._add_param(grid, 2, 0, "每次读取", self.search_page_size)
 
-        self.search_workers = self._make_spin_box(
-            1,
-            SEARCH_MAX_WORKERS,
-            SEARCH_DEFAULT_WORKERS,
+        self.search_workers = self._make_worker_spin(
+            f"默认 {SEARCH_DEFAULT_WORKERS}，较高并发可能触发限制",
+            width=None,
         )
-        self.search_workers.setFixedWidth(130)
-        self.search_workers.setToolTip(
-            f"默认 {SEARCH_DEFAULT_WORKERS}，较高并发可能触发限制"
-        )
-        form.addRow("同时请求数", self.search_workers)
+        self._add_param(grid, 3, 0, "同时请求数", self.search_workers)
 
         self.keyword_edit.textChanged.connect(self._update_search_preview)
-        self.keyword_edit.textChanged.connect(self._refresh_project_data)
+        self.keyword_edit.textChanged.connect(
+            self._schedule_project_refresh
+        )
         self.search_page_edit.textChanged.connect(self._update_search_preview)
         self.search_page_size.valueChanged.connect(self._update_search_preview)
         self.search_workers.valueChanged.connect(self._update_search_preview)
 
         (
-            command_group,
             self.search_execution_summary,
             self.search_command_preview,
-        ) = self._build_command_group()
-
-        self.search_start_button = self._make_start_button(
+        ) = self._assemble_task_tab(
+            layout,
+            group,
+            "search",
             "开始搜索",
             self._start_search_task,
         )
-
-        self._add_task_sections(
-            layout,
-            group,
-            command_group,
-            self._build_project_data_panel("search"),
-            self.search_start_button,
-        )
-
+        self._balance_parameter_rows(grid)
         self._update_search_preview()
         return page
 
@@ -871,57 +964,40 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = self._make_task_grid(page)
 
-        group = QGroupBox("UP 主参数")
-        group.setMaximumWidth(660)
-        form = QFormLayout(group)
-        form.setContentsMargins(16, 20, 16, 14)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(18)
+        group, grid = self._make_parameter_group("UP 主参数", columns=1)
 
         self.mid_edit = QLineEdit()
-        self.mid_edit.setFixedWidth(220)
+        self.mid_edit.setMinimumWidth(140)
         self.mid_edit.setPlaceholderText("例如 267068018")
-        form.addRow("UP 主 MID", self.mid_edit)
+        self._add_param(grid, 0, 0, "UP 主 MID", self.mid_edit)
 
         self.user_page_size = self._make_spin_box(1, 50, 30)
-        self.user_page_size.setFixedWidth(130)
-        form.addRow("每次读取", self.user_page_size)
+        self._add_param(grid, 1, 0, "每次读取", self.user_page_size)
 
-        self.user_workers = self._make_spin_box(
-            1,
-            SEARCH_MAX_WORKERS,
-            SEARCH_DEFAULT_WORKERS,
+        self.user_workers = self._make_worker_spin(
+            f"默认 {SEARCH_DEFAULT_WORKERS}，较高并发可能触发限制",
+            width=None,
         )
-        self.user_workers.setFixedWidth(130)
-        self.user_workers.setToolTip(
-            f"默认 {SEARCH_DEFAULT_WORKERS}，较高并发可能触发限制"
-        )
-        form.addRow("同时请求数", self.user_workers)
+        self._add_param(grid, 2, 0, "同时请求数", self.user_workers)
 
         self.mid_edit.textChanged.connect(self._update_user_preview)
-        self.mid_edit.textChanged.connect(self._refresh_project_data)
+        self.mid_edit.textChanged.connect(
+            self._schedule_project_refresh
+        )
         self.user_page_size.valueChanged.connect(self._update_user_preview)
         self.user_workers.valueChanged.connect(self._update_user_preview)
 
         (
-            command_group,
             self.user_execution_summary,
             self.user_command_preview,
-        ) = self._build_command_group()
-
-        self.user_start_button = self._make_start_button(
+        ) = self._assemble_task_tab(
+            layout,
+            group,
+            "user",
             "开始采集",
             self._start_user_video_task,
         )
-
-        self._add_task_sections(
-            layout,
-            group,
-            command_group,
-            self._build_project_data_panel("user"),
-            self.user_start_button,
-        )
-
+        self._balance_parameter_rows(grid)
         self._update_user_preview()
         return page
 
@@ -929,55 +1005,35 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = self._make_task_grid(page)
 
-        group = QGroupBox("热搜参数")
-        group.setMaximumWidth(660)
-        form = QFormLayout(group)
-        form.setContentsMargins(16, 20, 16, 14)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(18)
+        group, grid = self._make_parameter_group("热搜参数", columns=1)
 
         self.hot_limit = self._make_spin_box(1, 50, 10)
-        self.hot_limit.setFixedWidth(130)
-        form.addRow("热搜条数", self.hot_limit)
+        self._add_param(grid, 0, 0, "热搜条数", self.hot_limit)
 
         self.hot_page_size = self._make_spin_box(1, 50, 20)
-        self.hot_page_size.setFixedWidth(130)
-        form.addRow("每次读取", self.hot_page_size)
+        self._add_param(grid, 1, 0, "每次读取", self.hot_page_size)
 
-        self.hot_workers = self._make_spin_box(
-            1,
-            SEARCH_MAX_WORKERS,
-            SEARCH_DEFAULT_WORKERS,
+        self.hot_workers = self._make_worker_spin(
+            f"默认 {SEARCH_DEFAULT_WORKERS}，单个热搜词内部的请求并发数",
+            width=None,
         )
-        self.hot_workers.setFixedWidth(130)
-        self.hot_workers.setToolTip(
-            f"默认 {SEARCH_DEFAULT_WORKERS}，较高并发可能触发限制"
-        )
-        form.addRow("同时请求数", self.hot_workers)
+        self._add_param(grid, 2, 0, "关键词并发数", self.hot_workers)
 
         self.hot_limit.valueChanged.connect(self._update_hot_preview)
         self.hot_page_size.valueChanged.connect(self._update_hot_preview)
         self.hot_workers.valueChanged.connect(self._update_hot_preview)
 
         (
-            command_group,
             self.hot_execution_summary,
             self.hot_command_preview,
-        ) = self._build_command_group()
-
-        self.hot_start_button = self._make_start_button(
+        ) = self._assemble_task_tab(
+            layout,
+            group,
+            "hot",
             "开始采集",
             self._start_hot_search_task,
         )
-
-        self._add_task_sections(
-            layout,
-            group,
-            command_group,
-            self._build_project_data_panel("hot"),
-            self.hot_start_button,
-        )
-
+        self._balance_parameter_rows(grid)
         self._update_hot_preview()
         return page
 
@@ -994,7 +1050,7 @@ class MainWindow(QMainWindow):
         image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         image_pixmap = self._load_rounded_pixmap(
             "empty_state.jpg",
-            QSize(168, 168),
+            QSize(112, 112),
             8,
         )
 
@@ -1025,17 +1081,13 @@ class MainWindow(QMainWindow):
         toolbar.addStretch(1)
 
         clear_button = QPushButton("清空日志")
-        clear_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
-        )
+        clear_button.setIcon(icon("icon-trash.svg"))
         clear_button.clicked.connect(self._clear_log)
         toolbar.addWidget(clear_button)
 
         self.stop_button = QPushButton("停止任务")
         self.stop_button.setObjectName("StopButton")
-        self.stop_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
-        )
+        self.stop_button.setIcon(icon("icon-stop.svg"))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._stop_task)
         toolbar.addWidget(self.stop_button)
@@ -1044,11 +1096,7 @@ class MainWindow(QMainWindow):
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        font = QFont("Cascadia Mono")
-        if not font.exactMatch():
-            font = QFont("Consolas")
-        font.setPointSize(10)
-        self.log_edit.setFont(font)
+        self.log_edit.setFont(self._mono_font(10))
 
         self.log_stack = QStackedWidget()
         self.log_empty = self._build_empty_log()
@@ -1061,21 +1109,117 @@ class MainWindow(QMainWindow):
     def _make_start_button(self, text, callback):
         button = QPushButton(text)
         button.setObjectName("PrimaryButton")
-        button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
-        )
+        button.setIcon(icon("icon-play.svg"))
         button.setIconSize(QSize(16, 16))
         button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         button.clicked.connect(callback)
         self._start_buttons.append(button)
         return button
 
-    def _make_spin_box(self, minimum, maximum, value):
+    def _make_spin_box(self, minimum, maximum, value, width=None):
         spin_box = QSpinBox()
         spin_box.setLocale(QLocale.c())
         spin_box.setRange(minimum, maximum)
         spin_box.setValue(value)
+
+        if width is not None:
+            spin_box.setFixedWidth(width)
+
         return spin_box
+
+    def _make_worker_spin(self, tooltip, width=130):
+        spin_box = self._make_spin_box(
+            1,
+            SEARCH_MAX_WORKERS,
+            SEARCH_DEFAULT_WORKERS,
+            width=width,
+        )
+        spin_box.setToolTip(tooltip)
+        return spin_box
+
+    @staticmethod
+    def _mono_font(point_size):
+        font = QFont("Cascadia Mono")
+
+        if not font.exactMatch():
+            font = QFont("Consolas")
+
+        font.setPointSize(point_size)
+        return font
+
+    def _video_args(self, page_range):
+        action = self.video_action.currentData()
+        bvid = self.bvid_edit.text().strip() or DEFAULT_BVID
+        args = [VIDEO_ACTION_FLAGS[action], bvid]
+
+        if action in {"subtitles", "danmaku"} and page_range:
+            args.extend(["-p", page_range])
+
+        if action == "subtitles":
+            language = self.subtitle_language_edit.text().strip()
+
+            if language:
+                args.extend(["--language", language])
+
+        if action in {"comments", "all"}:
+            args.extend(
+                [
+                    "--comment-mode",
+                    (
+                        "hot"
+                        if self.comment_mode.currentData() == 3
+                        else "time"
+                    ),
+                    "--comment-page-size",
+                    str(self.comment_page_size.value()),
+                ]
+            )
+
+        return args
+
+    def _search_args(self, page_range):
+        args = ["-k", self.keyword_edit.text().strip() or "<未填写>"]
+
+        if page_range:
+            args.extend(["--search-page", page_range])
+
+        args.extend(
+            [
+                "--page-size",
+                str(self.search_page_size.value()),
+                "-w",
+                str(self.search_workers.value()),
+            ]
+        )
+        return args
+
+    def _user_args(self):
+        return [
+            "--mid",
+            self.mid_edit.text().strip() or "<未填写>",
+            "--page-size",
+            str(self.user_page_size.value()),
+            "-w",
+            str(self.user_workers.value()),
+        ]
+
+    def _hot_args(self):
+        return [
+            "-H",
+            "--limit",
+            str(self.hot_limit.value()),
+            "--page-size",
+            str(self.hot_page_size.value()),
+            "-w",
+            str(self.hot_workers.value()),
+        ]
+
+    @staticmethod
+    def _preview_command(args):
+        return " ".join(
+            f'"{arg}"' if " " in str(arg) else str(arg)
+            for arg in args
+        )
 
     def _update_video_preview(self, *_):
         if not hasattr(self, "video_execution_summary"):
@@ -1084,24 +1228,12 @@ class MainWindow(QMainWindow):
         action = self.video_action.currentData()
         supports_page = action in {"subtitles", "danmaku"}
         supports_language = action == "subtitles"
-        page_range = self.video_page_edit.text().strip()
+        supports_comments = action in {"comments", "all"}
+        page_range = (
+            self._normalize_page_range(self.video_page_edit.text()) or ""
+        )
         language = self.subtitle_language_edit.text().strip()
         bvid = self.bvid_edit.text().strip() or DEFAULT_BVID
-
-        flags = {
-            "info": "-i",
-            "comments": "-c",
-            "subtitles": "-s",
-            "danmaku": "-d",
-            "all": "-a",
-        }
-        command = ["main.py", flags[action], bvid]
-
-        if supports_page and page_range:
-            command.extend(["-p", page_range])
-
-        if supports_language and language:
-            command.extend(["--language", language])
 
         summary = [
             f"任务：{self.video_action.currentText()}",
@@ -1114,34 +1246,36 @@ class MainWindow(QMainWindow):
         if supports_language:
             summary.append(f"字幕：{language or '全部语言'}")
 
+        if supports_comments:
+            summary.append(
+                f"评论：{self.comment_mode.currentText()} · "
+                f"每页 {self.comment_page_size.value()} 条"
+            )
+
         self.video_execution_summary.setText("\n".join(summary))
-        self.video_command_preview.setPlainText(" ".join(command))
+        self.video_command_preview.setPlainText(
+            self._preview_command(["main.py", *self._video_args(page_range)])
+        )
 
     def _update_search_preview(self, *_):
         if not hasattr(self, "search_execution_summary"):
             return
 
         keyword = self.keyword_edit.text().strip() or "未填写"
-        page_range = self.search_page_edit.text().strip() or "1"
-        command = ["main.py", "-k", f'"{keyword}"']
-
-        if page_range != "1":
-            command.extend(["-p", page_range])
-
-        command.extend(
-            [
-                "--page-size",
-                str(self.search_page_size.value()),
-                "-w",
-                str(self.search_workers.value()),
-            ]
+        page_range = (
+            self._normalize_page_range(self.search_page_edit.text()) or ""
         )
+        display_page_range = page_range or "1"
+
+        if page_range.isdigit() and int(page_range) > 1:
+            display_page_range = f"1-{page_range}"
+
         self.search_execution_summary.setText(
             "\n".join(
                 [
                     "任务：关键词搜索",
                     f"关键词：{keyword}",
-                    f"页码：{page_range}",
+                    f"页码：{display_page_range}",
                     (
                         f"读取：每次 {self.search_page_size.value()} 条 · "
                         f"同时 {self.search_workers.value()} 个请求"
@@ -1149,27 +1283,19 @@ class MainWindow(QMainWindow):
                 ]
             )
         )
-        self.search_command_preview.setPlainText(" ".join(command))
+        self.search_command_preview.setPlainText(
+            self._preview_command(["main.py", *self._search_args(page_range)])
+        )
 
     def _update_user_preview(self, *_):
         if not hasattr(self, "user_execution_summary"):
             return
 
-        mid = self.mid_edit.text().strip() or "未填写"
-        command = [
-            "main.py",
-            "--mid",
-            mid,
-            "--page-size",
-            str(self.user_page_size.value()),
-            "-w",
-            str(self.user_workers.value()),
-        ]
         self.user_execution_summary.setText(
             "\n".join(
                 [
                     "任务：UP 主全部视频",
-                    f"UP 主 MID：{mid}",
+                    f"UP 主 MID：{self.mid_edit.text().strip() or '未填写'}",
                     (
                         f"读取：每次 {self.user_page_size.value()} 条 · "
                         f"同时 {self.user_workers.value()} 个请求"
@@ -1177,22 +1303,14 @@ class MainWindow(QMainWindow):
                 ]
             )
         )
-        self.user_command_preview.setPlainText(" ".join(command))
+        self.user_command_preview.setPlainText(
+            self._preview_command(["main.py", *self._user_args()])
+        )
 
     def _update_hot_preview(self, *_):
         if not hasattr(self, "hot_execution_summary"):
             return
 
-        command = [
-            "main.py",
-            "-H",
-            "--limit",
-            str(self.hot_limit.value()),
-            "--page-size",
-            str(self.hot_page_size.value()),
-            "-w",
-            str(self.hot_workers.value()),
-        ]
         self.hot_execution_summary.setText(
             "\n".join(
                 [
@@ -1200,12 +1318,14 @@ class MainWindow(QMainWindow):
                     f"热搜：前 {self.hot_limit.value()} 条",
                     (
                         f"读取：每次 {self.hot_page_size.value()} 条 · "
-                        f"同时 {self.hot_workers.value()} 个请求"
+                        f"关键词内部 {self.hot_workers.value()} 个请求"
                     ),
                 ]
             )
         )
-        self.hot_command_preview.setPlainText(" ".join(command))
+        self.hot_command_preview.setPlainText(
+            self._preview_command(["main.py", *self._hot_args()])
+        )
 
     def _apply_style(self):
         self.setStyleSheet(APP_STYLE)
@@ -1214,12 +1334,26 @@ class MainWindow(QMainWindow):
         action = self.video_action.currentData()
         supports_page = action in {"subtitles", "danmaku"}
         supports_language = action == "subtitles"
+        supports_comments = action in {"comments", "all"}
 
-        self.video_page_edit.setEnabled(supports_page)
-        self.subtitle_language_edit.setEnabled(supports_language)
+        rows = (
+            (self.comment_options, supports_comments),
+            (self.video_page_edit, supports_page),
+            (self.subtitle_language_edit, supports_language),
+        )
+
+        for field, visible in rows:
+            field.setVisible(visible)
+            label = self.video_labels.get(field)
+
+            if label is not None:
+                label.setVisible(visible)
+
+        self._balance_parameter_rows(self.video_grid)
 
     def _check_login(self):
-        self._start_task(["-l"], "检查登录")
+        # 登录检查不产出数据，完成弹窗不该报「保存位置」
+        self._start_task(["-l"], "检查登录", has_output=False)
 
     def _start_video_task(self):
         bvid = self.bvid_edit.text().strip() or DEFAULT_BVID
@@ -1229,14 +1363,7 @@ class MainWindow(QMainWindow):
             return
 
         action = self.video_action.currentData()
-        action_flags = {
-            "info": "-i",
-            "comments": "-c",
-            "subtitles": "-s",
-            "danmaku": "-d",
-            "all": "-a",
-        }
-        args = [action_flags[action], bvid]
+        page_range = ""
 
         if action in {"subtitles", "danmaku"}:
             page_range = self._read_page_range(self.video_page_edit.text())
@@ -1244,16 +1371,10 @@ class MainWindow(QMainWindow):
             if page_range is None:
                 return
 
-            if page_range:
-                args.extend(["-p", page_range])
-
-        if action == "subtitles":
-            language = self.subtitle_language_edit.text().strip()
-
-            if language:
-                args.extend(["--language", language])
-
-        self._start_task(args, f"视频采集：{self.video_action.currentText()}")
+        self._start_task(
+            self._video_args(page_range),
+            f"视频采集：{self.video_action.currentText()}",
+        )
 
     def _start_search_task(self):
         keyword = self.keyword_edit.text().strip()
@@ -1268,20 +1389,10 @@ class MainWindow(QMainWindow):
         if page_range is None:
             return
 
-        args = ["-k", keyword]
-
-        if page_range:
-            args.extend(["-p", page_range])
-
-        args.extend(
-            [
-                "--page-size",
-                str(self.search_page_size.value()),
-                "-w",
-                str(self.search_workers.value()),
-            ]
+        self._start_task(
+            self._search_args(page_range),
+            f"关键词搜索：{keyword}",
         )
-        self._start_task(args, f"关键词搜索：{keyword}")
 
     def _start_user_video_task(self):
         mid = self.mid_edit.text().strip()
@@ -1291,29 +1402,13 @@ class MainWindow(QMainWindow):
             self.mid_edit.setFocus()
             return
 
-        args = [
-            "--mid",
-            mid,
-            "--page-size",
-            str(self.user_page_size.value()),
-            "-w",
-            str(self.user_workers.value()),
-        ]
-        self._start_task(args, f"UP 主视频：{mid}")
+        self._start_task(self._user_args(), f"UP 主视频：{mid}")
 
     def _start_hot_search_task(self):
-        args = [
-            "-H",
-            "--limit",
-            str(self.hot_limit.value()),
-            "--page-size",
-            str(self.hot_page_size.value()),
-            "-w",
-            str(self.hot_workers.value()),
-        ]
-        self._start_task(args, "热搜搜索")
+        self._start_task(self._hot_args(), "热搜搜索")
 
-    def _read_page_range(self, value):
+    @staticmethod
+    def _normalize_page_range(value):
         value = value.strip()
 
         if not value:
@@ -1322,20 +1417,27 @@ class MainWindow(QMainWindow):
         try:
             start, end = parse_page_range(value)
         except Exception:
-            self._show_input_error(
-                "页范围格式不正确，应填写 1 或 1,3。"
-            )
             return None
 
         return str(start) if start == end else f"{start},{end}"
 
-    def _start_task(self, args, title):
+    def _read_page_range(self, value):
+        page_range = self._normalize_page_range(value)
+
+        if page_range is None:
+            self._show_input_error("页范围格式不正确，应填写 1 或 1,3。")
+
+        return page_range
+
+    def _start_task(self, args, title, has_output=True):
         if self._busy:
             return
 
         active_page = self.pages.currentIndex()
         self._task_title = title
         self._task_page = active_page
+        self._task_has_output = has_output
+        self._save_settings()
         self._log_header(title, args)
         self._set_busy(True, "运行中")
         self.pages.setCurrentIndex(active_page)
@@ -1406,7 +1508,7 @@ class MainWindow(QMainWindow):
 
         if success:
             self._append_log("\n任务完成。\n")
-            self._refresh_recent_outputs()
+            self._refresh_project_data()
             self._set_busy(False, "已完成")
             self.statusBar().showMessage("任务完成", 5000)
             project_kind = {
@@ -1414,7 +1516,7 @@ class MainWindow(QMainWindow):
                 1: "search",
                 2: "user",
                 3: "hot",
-            }.get(self._task_page)
+            }.get(self._task_page) if self._task_has_output else None
             project_path = (
                 self._current_project_path(project_kind)
                 if project_kind
@@ -1500,10 +1602,9 @@ class MainWindow(QMainWindow):
             self.log_stack.setCurrentWidget(self.log_empty)
 
     def _open_output_dir(self):
-        output_dir = BASE_DIR / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        self._refresh_recent_outputs()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        self._refresh_project_data()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(OUTPUT_DIR)))
 
     def _show_input_error(self, message):
         QMessageBox.warning(self, "参数错误", message)
@@ -1525,4 +1626,5 @@ class MainWindow(QMainWindow):
             if self._process is not None:
                 self._process.kill()
 
+        self._save_settings()
         event.accept()

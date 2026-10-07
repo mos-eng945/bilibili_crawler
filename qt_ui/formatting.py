@@ -1,5 +1,6 @@
 """Data labels and display formatting."""
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,10 @@ COLUMN_LABELS = {
     "published_at": "发布时间",
     "author": "作者",
     "mid": "作者编号",
+    "partition": "分区",
+    "tags": "标签",
+    "duration_seconds": "视频时长",
+    "cover_url": "封面地址",
     "like": "点赞",
     "comment_count": "评论数",
     "favorite_count": "收藏数",
@@ -30,7 +35,6 @@ COLUMN_LABELS = {
     "keyword": "热搜词",
     "show_name": "展示名称",
     "heat_score": "热度",
-    "result_file": "结果文件",
     "status": "状态",
     "error": "错误",
     "rpid": "评论编号",
@@ -40,6 +44,7 @@ COLUMN_LABELS = {
     "ctime": "评论时间",
     "reply_count": "回复数",
     "state": "评论状态",
+    "ip_location": "IP属地",
     "image_urls": "图片地址",
     "时间(ms)": "出现时间",
     "内容": "弹幕内容",
@@ -77,6 +82,8 @@ KEY_COLUMN_ORDER = {
         "搜索关键词",
         "title",
         "author",
+        "partition",
+        "duration_seconds",
         "play_count",
         "like",
         "comment_count",
@@ -85,6 +92,8 @@ KEY_COLUMN_ORDER = {
         "share_count",
         "author_follower_count",
         "danmaku_count",
+        "tags",
+        "cover_url",
         "bvid",
         "mid",
     ),
@@ -96,6 +105,7 @@ KEY_COLUMN_ORDER = {
         "reply_count",
         "user_level",
         "state",
+        "ip_location",
         "rpid",
         "mid",
         "image_urls",
@@ -105,7 +115,6 @@ KEY_COLUMN_ORDER = {
         "heat_score",
         "rank",
         "status",
-        "result_file",
         "show_name",
         "error",
     ),
@@ -176,9 +185,19 @@ def format_preview_value(column, value):
         text = str(value).replace("T", " ")
         return text[:16]
 
-    if column == "result_file":
-        text = str(value or "").strip()
-        return Path(text).name if text else "未生成"
+    if column == "duration_seconds":
+        try:
+            total_seconds = max(0, int(value))
+        except (TypeError, ValueError):
+            return str(value)
+
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return (
+            f"{hours}:{minutes:02d}:{seconds:02d}"
+            if hours
+            else f"{minutes}:{seconds:02d}"
+        )
 
     if column == "status":
         return {
@@ -214,3 +233,64 @@ def format_preview_value(column, value):
         )
 
     return str(value)
+
+
+def friendly_video_name(folder_name):
+    """把 output 里的视频目录名整理成易读名称。"""
+    parts = folder_name.rsplit("_", 1)
+
+    if len(parts) != 2 or not parts[1].startswith("BV"):
+        return folder_name
+
+    base_name = parts[0]
+
+    if "_" in base_name:
+        up_name, title = base_name.split("_", 1)
+        return f"{title} · {up_name}"
+
+    return base_name
+
+
+def friendly_file_name(path):
+    """把数据文件名整理成易读名称，供列表和浏览弹窗共用。"""
+    path = Path(path)
+    filename = path.name
+
+    if filename == "video_info.json":
+        return "视频概览"
+
+    if filename.startswith("comments_"):
+        return "评论"
+
+    if filename.startswith("danmaku_"):
+        match = re.search(r"_p(\d+)\.csv$", filename)
+        return f"弹幕 P{match.group(1)}" if match else "弹幕"
+
+    if filename.startswith("subtitle_"):
+        match = re.search(r"_p(\d+)_(.+)\.(json|srt)$", filename)
+
+        if match:
+            page, language, suffix = match.groups()
+            return f"字幕 P{page} · {language} · {suffix.upper()}"
+
+        return "字幕"
+
+    if filename == "hot_list.csv":
+        return "热搜汇总"
+
+    if filename.startswith("search_"):
+        return f"搜索结果 · {path.parent.name}{_count_suffix(path)}"
+
+    if filename.startswith("videos_"):
+        return f"UP 主视频 · {path.parent.name}{_count_suffix(path)}"
+
+    return path.stem
+
+
+def _count_suffix(path):
+    parts = path.stem.rsplit("_", 1)
+
+    if len(parts) == 2 and parts[1].isdigit():
+        return f" · {parts[1]} 条"
+
+    return ""

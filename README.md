@@ -24,10 +24,12 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `config.py` | 默认 BVID 和通用参数解析 |
+| `config.py` | 项目根目录、默认 BVID 和通用参数解析 |
+| `output_paths.py` | `output/` 目录结构、路径构造和查找 |
+| `session.py` | 采集会话：缓存 cookie、WBI 密钥、视频信息和输出目录 |
 | `main.py` | `bilibili` 命令行入口和功能分发 |
-| `login.py` | 保存、检查和刷新 Bilibili 登录状态 |
-| `bilibili_api.py` | 公共接口请求、WBI 签名、输出路径和字幕接口 |
+| `login.py` | 保存登录状态，并按 Chrome、Edge、Playwright Chromium 顺序启动浏览器 |
+| `bilibili_api.py` | 公共接口请求、WBI 签名和字幕接口 |
 | `crawler_info.py` | 获取并保存视频信息和 UP 主粉丝数 |
 | `crawler_comment.py` | 分页采集全部一级评论并保存 CSV |
 | `crawler_subtitle.py` | 下载字幕 JSON 并转换 SRT |
@@ -43,17 +45,17 @@
 | `qt_ui/main_window.py` | 主窗口、页面布局和爬虫任务控制 |
 | `qt_ui/dialogs.py` | 表格预览和目录浏览弹窗 |
 | `qt_ui/formatting.py` | 字段名称、数字和时间格式转换 |
-| `qt_ui/theme.py` | Qt 全局样式 |
-| `assets/` | 图形界面使用的图片资源 |
+| `qt_ui/theme.py` | 加载并注入 Qt 全局样式 |
+| `assets/` | 图形界面资源，含图标、图片和 `app.qss` 样式表 |
 
 ## 环境要求
 
-- Python 3.9 或更高版本
-- Google Chrome
+- Python 3.14 或更高版本
+- Google Chrome、Microsoft Edge 或 Playwright Chromium
 - 可访问 Bilibili 的网络环境
 - 一个可正常登录的 Bilibili 账号(得到cookie)
 
-`zoneinfo` 用于把时间戳转换为中国时区时间，因此需要 Python 3.9 以上。
+程序使用 `zoneinfo` 把时间戳转换为中国时区时间。
 
 ## 安装
 
@@ -61,6 +63,12 @@
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
+```
+
+如果没有 Chrome 或 Edge，可以安装 Playwright 自带 Chromium：
+
+```powershell
+python -m playwright install chromium
 ```
 
 依赖统一声明在 `pyproject.toml`。需要重新编译 `dm.proto` 时，
@@ -91,7 +99,7 @@ python qt_app.py
 ## 运行
 
 安装后所有命令都以 `bilibili` 开头，必须选择一项操作。
-旧版 `python main.py` 和 `--search-page`、`--subtitle-page` 等参数不再兼容。
+旧版 `python main.py` 和 `--subtitle-page` 等参数不再兼容。
 
 确认登录状态：
 
@@ -109,6 +117,12 @@ bilibili -i BV1V3Yn6wENr
 
 ```powershell
 bilibili -c BV1V3Yn6wENr
+```
+
+按热门排序采集评论，每页 20 条：
+
+```powershell
+bilibili -c BV1V3Yn6wENr --comment-mode hot --comment-page-size 20
 ```
 
 只采集字幕：
@@ -156,8 +170,11 @@ bilibili -m 267068018 --page-size 50 -w 3
 指定搜索页码范围、每页数量和并发线程数：
 
 ```powershell
-bilibili -k "Python 教程" -p 2,4 --page-size 50 -w 3
+bilibili -k "Python 教程" --search-page 2,4 --page-size 50 -w 3
 ```
+
+关键词搜索中的单值页范围表示从第 1 页开始，例如 `--search-page 10`
+表示采集第 1 到第 10 页；只采集第 10 页时使用 `--search-page 10,10`。
 
 对 Bilibili 热搜词逐个执行搜索：
 
@@ -186,16 +203,16 @@ bilibili -i
 评论使用 WBI 游标分页顺序采集，不受旧评论接口的
 `max offset exceeded` 页码上限影响。
 
-首次运行或登录状态失效时，程序会打开 Chrome，要求手动登录。
+首次运行或登录状态失效时，程序会打开可用浏览器，要求手动登录。
 登录完成后，Cookie 和 localStorage 会保存到 `bilibili_state.json`。
 
 `-a` 会依次执行：
 
 1. 检查或刷新登录状态。
 2. 保存视频信息和 UP 主粉丝数。
-3. 按时间顺序下载该视频的全部一级评论。
-4. 下载该视频所有分 P 的字幕。
-5. 打开播放器并采集所有分 P 的弹幕。
+3. 下载该视频所有分 P 的字幕。
+4. 打开播放器并采集所有分 P 的弹幕。
+5. 最后按时间顺序下载该视频的全部一级评论（最慢，放在最后）。
 
 评论、字幕和弹幕可能受以下条件影响：
 
@@ -206,10 +223,20 @@ bilibili -i
 
 ## 输出目录
 
-所有结果保存在：
+所有结果保存在 `output/` 下，按类别分成四个平级目录：
 
 ```text
-output/{UP主}_{标题}_{BV号}/
+output/
+├── bvid/          视频数据
+├── search/        关键词搜索
+├── up/            UP 主视频
+└── hot_search/    热搜搜索
+```
+
+视频数据保存在 `output/bvid/`：
+
+```text
+output/bvid/{UP主}_{标题}_{BV号}/
 ```
 
 标题中的 `?`、`:`、`/`、`\` 等非法文件名字符会替换为 `_`。
@@ -217,7 +244,7 @@ output/{UP主}_{标题}_{BV号}/
 典型目录内容：
 
 ```text
-output/
+output/bvid/
 └── UP主_视频标题_BV号/
     ├── video_info.json
     ├── comments_BV号.csv
@@ -242,22 +269,29 @@ output/search/{关键词}/search_{时间}_{数据量}.csv
 UP 主视频保存在：
 
 ```text
-output/search/up/{MID}/videos_{时间}_{数据量}.csv
+output/up/{MID}+{UP主名字}/videos_{时间}_{数据量}.csv
 ```
 
 热搜搜索会按运行时间创建目录，并把每个热搜词的结果保存到对应子目录：
 
 ```text
-output/search/hot-search/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
-output/search/hot-search/{运行时间}/hot_list.csv
+output/hot_search/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
+output/hot_search/{运行时间}/hot_list.csv
 ```
 
-搜索 CSV 包含 `bvid`、标题、发布时间、作者、作者 mid、点赞数、评论数、
-收藏数、分享数、作者粉丝数、播放数和弹幕数。发布时间来自搜索结果的
-`pubdate`，视频详情可用时优先使用详情值。热搜关键词的热度保存在
-`hot_list.csv`。搜索接口缺少的分享数和作者粉丝数会通过视频详情和作者
-接口补充；作者粉丝数按作者 mid 缓存，同一作者只请求一次。搜索页、视频
-详情和作者粉丝数分别使用线程池并发请求，结果仍按搜索顺序保存。
+搜索 CSV 包含 `bvid`、标题、发布时间、作者、作者 mid、分区、标签、视频
+时长、封面 URL、点赞数、评论数、收藏数、分享数、作者粉丝数、播放数和
+弹幕数。除作者粉丝数外，其余字段直接来自搜索结果，不再批量请求视频详情；
+作者粉丝数按作者 mid 缓存，同一作者只请求一次。搜索结果不提供分享数，
+因此 `share_count` 固定为 `0`。搜索页和作者粉丝数请求使用线程池并发，
+结果仍按搜索顺序保存。热搜词之间按榜单顺序串行处理，单个热搜词内部的
+搜索请求仍按 `-w` 指定的并发数执行。
+
+图形界面的数据预览支持直接打开视频：选中结果后点击“打开视频”，或双击
+“视频编号”或“标题”单元格即可跳转到对应的 Bilibili 页面。为降低内存
+占用，数据预览最多加载前 5000 行，完整数据仍保存在原始文件中。封面地址
+列可单击打开封面，鼠标悬停时会显示链接反馈。GUI 关闭时会保存上次输入的
+关键词、范围、并发数和工作区，重新打开后自动恢复对应的数据面板。
 
 ## 视频信息
 
@@ -291,7 +325,8 @@ comments_{BV号}.csv
 ```
 
 当前只采集直接评论视频的一级评论，不展开一级评论下面的子评论。
-采集使用时间排序，通过 WBI 游标分页依次推进，并按照 `rpid` 去重。
+评论可以选择按时间或热门排序，通过 WBI 游标分页依次推进，并按照 `rpid`
+去重。
 接口返回的 `all_count` 是视频总评论数，包含一级评论下面的子评论；CSV
 实际保存的行数是一级评论数。
 
@@ -311,9 +346,17 @@ CSV 列如下：
 | `like` | 评论点赞数 |
 | `reply_count` | 子评论数量 |
 | `state` | 评论状态，`0` 表示正常 |
+| `ip_location` | 评论 IP 属地，例如“湖北”；不是完整 IP 地址 |
 | `image_urls` | 评论图片URL，多个地址用 `|` 分隔 |
 
 图片只保存 URL，不下载图片文件。
+
+命令行参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--comment-mode` | `time` | `time` 按时间排序，`hot` 按热门排序 |
+| `--comment-page-size` | `30` | 评论每页数量，范围 `1-30` |
 
 评论正文中的连续空格会压缩为一个空格，连续换行会转换为一个可见的
 `\n` 字符。没有图片时 `image_urls` 列为空。
@@ -382,7 +425,7 @@ bilibili_state.json
 
 1. 检查 `SESSDATA` 是否存在且未过期。
 2. 请求 `x/web-interface/nav` 验证登录状态。
-3. 登录无效时打开 Chrome，等待人工登录。
+3. 登录无效时打开可用浏览器，等待人工登录。
 4. 保存新的 Playwright storage state。
 
 ## 已知限制
