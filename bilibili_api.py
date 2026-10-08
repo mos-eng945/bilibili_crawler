@@ -1,17 +1,20 @@
 """Bilibili 公共接口、WBI 签名和输出路径工具。"""
 
 import hashlib
+import http.client
 import json
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from login import get_cookie_header
 
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
+REQUEST_TIMEOUT_SECONDS = 20
+REQUEST_RETRY_ATTEMPTS = 2
+_THREAD_LOCAL = threading.local()
 
 # Bilibili WBI 签名使用的字符重排表
 MIXIN_KEY_ENC_TAB = [
@@ -82,33 +85,103 @@ MIXIN_KEY_ENC_TAB = [
 ]
 
 
-def request_json(url, cookie):
-    """请求 Bilibili JSON 接口，并检查业务错误码。"""
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Cookie": cookie,
-            "User-Agent": USER_AGENT,
-            "Referer": "https://www.bilibili.com/",
-        },
+def _close_thread_connection():
+    """关闭当前线程缓存的 HTTP 连接。"""
+    connection = getattr(_THREAD_LOCAL, "connection", None)
+
+    if connection is not None:
+        connection.close()
+
+    _THREAD_LOCAL.connection = None
+    _THREAD_LOCAL.connection_key = None
+
+
+def _get_thread_connection(parsed_url):
+    """按线程复用同一主机的 HTTP/HTTPS 连接。"""
+    connection_key = (
+        parsed_url.scheme,
+        parsed_url.hostname,
+        parsed_url.port,
     )
+    connection = getattr(_THREAD_LOCAL, "connection", None)
 
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            data = json.load(response)
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"请求失败：HTTP {exc.code}\n{error_body}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"请求或解析失败：{url}") from exc
+    if (
+        connection is not None
+        and getattr(_THREAD_LOCAL, "connection_key", None) != connection_key
+    ):
+        _close_thread_connection()
+        connection = None
 
-    if data.get("code") != 0:
-        raise RuntimeError(
-            f"Bilibili 接口返回错误：code={data.get('code')} "
-            f"message={data.get('message')}"
+    if connection is None:
+        connection_class = (
+            http.client.HTTPSConnection
+            if parsed_url.scheme == "https"
+            else http.client.HTTPConnection
         )
+        connection = connection_class(
+            parsed_url.hostname,
+            parsed_url.port,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        _THREAD_LOCAL.connection = connection
+        _THREAD_LOCAL.connection_key = connection_key
 
-    return data.get("data", {})
+    return connection
+
+
+def request_json(url, cookie):
+    """请求 Bilibili JSON 接口，复用连接并检查业务错误码。"""
+    parsed_url = urllib.parse.urlsplit(url)
+    path = parsed_url.path or "/"
+
+    if parsed_url.query:
+        path = f"{path}?{parsed_url.query}"
+
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": USER_AGENT,
+        "Referer": "https://www.bilibili.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Connection": "keep-alive",
+    }
+
+    for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
+        connection = _get_thread_connection(parsed_url)
+
+        try:
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            status = response.status
+        except (OSError, http.client.HTTPException) as exc:
+            _close_thread_connection()
+
+            if attempt == REQUEST_RETRY_ATTEMPTS:
+                raise RuntimeError(f"请求失败：{url}") from exc
+
+            continue
+
+        if status >= 400:
+            error_body = body.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"请求失败：HTTP {status}\n{error_body}"
+            )
+
+        try:
+            data = json.loads(body)
+        except (TypeError, json.JSONDecodeError) as exc:
+            _close_thread_connection()
+            raise RuntimeError(f"请求或解析失败：{url}") from exc
+
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"Bilibili 接口返回错误：code={data.get('code')} "
+                f"message={data.get('message')}"
+            )
+
+        return data.get("data", {})
+
+    raise RuntimeError(f"请求失败：{url}")
 
 
 def get_wbi_mixin_key(cookie):
@@ -141,8 +214,56 @@ def request_wbi_json(path, params, cookie, mixin_key):
     return request_json(f"{API_BASE}{path}?{query}", cookie)
 
 
+def get_video_detail(bvid, cookie, mixin_key):
+    """
+    取得视频详情的原始数据。
+
+    调用前端同款的 `/x/web-interface/wbi/view/detail` 接口（需要 WBI 签名），
+    返回 data 的完整字典，包含 View(视频主体)、Card(UP 主卡片)、
+    Tags(标签)、Reply(首屏评论)、Related(相关推荐) 等字段。
+
+    参数：
+        bvid: 视频 BV 号，例如 "BV1UT42167xb"。
+        cookie: 已登录的请求 Cookie 头，通常来自 Session.cookie。
+        mixin_key: WBI 签名密钥，通常来自 Session.mixin_key。
+    """
+    return request_wbi_json(
+        "/x/web-interface/wbi/view/detail",
+        {
+            "bvid": bvid,
+            "need_operation_card": 1,
+            "web_rm_repeat": 1,
+            "need_elec": 1,
+            "page_no": 1,
+            "p": 1,
+        },
+        cookie,
+        mixin_key,
+    )
+
+
 def get_video_info(bvid, cookie):
-    """取得视频的详细信息。"""
+    """
+    取得视频的详细信息（轻量接口）。
+
+    调用 `/x/web-interface/view`，只返回视频主体数据，响应约 2KB。
+    批量拉取（如 UP 主视频列表）用这个，避免详情接口多出约 40 倍的数据；
+    需要 Card(UP 主卡片)、Related(相关推荐) 等字段时用 get_video_detail。
+
+    参数：
+        bvid: 视频 BV 号，例如 "BV1UT42167xb"。
+        cookie: 已登录的请求 Cookie 头，通常来自 Session.cookie。
+
+    返回：
+        接口 data 字段的字典，常用字段包括：
+        - bvid / aid: 视频 BV 号和 av 号
+        - title / desc: 标题和简介
+        - pubdate / duration: 发布时间戳(秒)和视频时长(秒)
+        - owner: UP 主信息，含 mid、name、face
+        - stat: 统计数据，含 view、like、coin、favorite、
+          reply、danmaku、share
+        - pages: 分 P 列表，每项含 page、cid、part、duration
+    """
     query = urllib.parse.urlencode({"bvid": bvid})
     return request_json(f"{API_BASE}/x/web-interface/view?{query}", cookie)
 

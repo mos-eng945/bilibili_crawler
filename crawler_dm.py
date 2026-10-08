@@ -24,7 +24,22 @@ SEEK_WAIT_MS = 2500
 
 
 def crawl_page(page, bvid, page_info, total_pages, video_dir, use_page_suffix):
-    """采集一个分 P 的弹幕并写入独立 CSV。"""
+    """
+    采集一个分 P 的弹幕并写入独立 CSV。
+
+    参数：
+        page: Playwright 的 Page 对象，用于跳转播放位置并监听弹幕接口。
+        bvid: 视频 BV 号，用于拼接弹幕 CSV 文件名。
+        page_info: 当前分 P 的元信息字典，包含 page（第几 P）、
+            cid（弹幕 oid）和 part（分 P 标题）。
+        total_pages: 分 P 总数，仅用于打印采集进度。
+        video_dir: 保存弹幕 CSV 的视频输出目录（pathlib.Path）。
+        use_page_suffix: 是否在文件名中追加 p{page} 后缀，
+            多 P 视频用它区分各分 P，单 P 视频共用一个文件。
+
+    返回：
+        本次实际写入的弹幕条数；缺少 cid 时返回 0。
+    """
     page_number = page_info.get("page", 1)
     expected_oid = page_info.get("cid")
     part = page_info.get("part", "")
@@ -156,7 +171,7 @@ class DanmakuCrawler:
     def run(self):
         bvid = self.session.bvid
         pages = self.session.pages(self.page_range)
-        video_page_count = len(self.session.video_info.get("pages", []))
+        video_page_count = self.session.page_count
         video_dir = self.session.video_dir
 
         with sync_playwright() as p:

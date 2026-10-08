@@ -1,6 +1,5 @@
 """Bilibili 视频信息采集。"""
 
-from bilibili_api import get_up_follower_count
 from config import DEFAULT_BVID
 from crawler_common import format_published_at, write_json
 from login import ensure_login
@@ -17,12 +16,6 @@ class VideoInfoCrawler:
         data = self.session.video_info
         stat = data.get("stat", {})
         owner = data.get("owner", {})
-        mid = owner.get("mid")
-
-        if not mid:
-            raise RuntimeError(
-                f"视频 {self.session.bvid} 没有返回 UP 主 mid"
-            )
 
         result = {
             "title": data.get("title", ""),
@@ -36,10 +29,7 @@ class VideoInfoCrawler:
             "up_name": owner.get("name", ""),
             "reply": stat.get("reply", 0),
             "danmaku": stat.get("danmaku", 0),
-            "up_follower_count": get_up_follower_count(
-                mid,
-                self.session.cookie,
-            ),
+            "up_follower_count": self.session.up_follower_count,
         }
 
         video_dir = self.session.video_dir

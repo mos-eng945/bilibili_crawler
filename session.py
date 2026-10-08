@@ -4,7 +4,10 @@ cookie、WBI 密钥、视频信息和输出目录都按需获取并缓存，避�
 视频的多个采集任务重复读盘、重复请求。
 """
 
-from bilibili_api import get_video_info, get_wbi_mixin_key
+from bilibili_api import (
+    get_video_detail,
+    get_wbi_mixin_key,
+)
 from login import get_cookie_header
 from output_paths import get_video_dir
 
@@ -37,34 +40,37 @@ class VideoSession(Session):
     def __init__(self, bvid):
         super().__init__()
         self.bvid = bvid
-        self._video_info = None
-        self._video_dir = None
+        self._video_detail = None  # 详情原始数据缓存，含 View、Card 等
+        self._video_dir = None  # 输出目录缓存，首次访问 video_dir 时计算并写入
+
+    @property
+    def video_detail(self):
+        """视频详情原始数据，含 View、Card、Reply、Related 等字段。"""
+        if self._video_detail is None:
+            self._video_detail = get_video_detail(
+                self.bvid,
+                self.cookie,
+                self.mixin_key,
+            )
+
+        return self._video_detail
 
     @property
     def video_info(self):
-        if self._video_info is None:
-            info = get_video_info(self.bvid, self.cookie)
+        """视频主体信息（View 字段），为空时直接报错。"""
+        info = self.video_detail.get("View", {})
 
-            if not info:
-                raise RuntimeError(
-                    f"没有取到视频信息：{self.bvid}，BV 号可能不存在"
-                )
+        if not info:
+            raise RuntimeError(
+                f"没有取到视频信息：{self.bvid}，接口返回为空,BV号可能不存在"
+            )
 
-            missing = [
-                key
-                for key in ("bvid", "title", "owner")
-                if not info.get(key)
-            ]
+        return info
 
-            if missing:
-                raise RuntimeError(
-                    f"视频 {self.bvid} 的返回信息缺少字段："
-                    f"{'、'.join(missing)}"
-                )
-
-            self._video_info = info
-
-        return self._video_info
+    @property
+    def up_follower_count(self):
+        """UP 主粉丝数，取详情 Card 里的 follower。"""
+        return (self.video_detail.get("Card") or {}).get("follower")
 
     @property
     def video_dir(self):
@@ -74,7 +80,7 @@ class VideoSession(Session):
         return self._video_dir
 
     def pages(self, page_range=None):
-        """返回该视频的分 P 列表，可选按 START,END 过滤。"""
+        """返回该视频的分 P 列表，可选按 [START, END] 过滤。"""
         pages = self.video_info.get("pages", [])
 
         if not pages:
@@ -83,14 +89,44 @@ class VideoSession(Session):
         if page_range is None:
             return pages
 
-        start, end = page_range
-        selected = [
-            page
-            for page in pages
-            if start <= page.get("page", 0) <= end
-        ]
+        try:
+            start, end = page_range
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"page_range 应为 [START, END] 两个值，收到：{page_range!r}"
+            ) from exc
+
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise ValueError(f"page_range 的两个值必须是整数，收到：{page_range!r}")
+
+        if start < 1 or end < start:
+            raise ValueError(
+                f"页码范围必须满足 1 <= START <= END，收到：{page_range!r}"
+            )
+
+        selected = [page for page in pages if start <= page.get("page", 0) <= end]
 
         if not selected:
             raise RuntimeError(f"视频 {self.bvid} 没有分 P {start}-{end}")
 
         return selected
+
+    @property
+    def page_count(self):
+        """分 P 总数。"""
+        return len(self.pages())
+
+
+if __name__ == "__main__":
+    # s = Session()
+    # print("cookie:", s.cookie)
+    # print("mixin_key:", s.mixin_key)
+
+    s = VideoSession("BV1xx411c7mD")
+    info = s.video_info
+    pages = s.pages()
+    print("pages", pages)
+    print("标题：", info.get("title"))
+    print("UP 主：", info.get("owner", {}).get("name"))
+    print("输出目录：", s.video_dir)
+    print("分 P 数量：", s.page_count)
