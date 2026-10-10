@@ -17,9 +17,8 @@ from bilibili_api import (
     get_player_subtitles,
 )
 from config import DEFAULT_BVID, parse_page_range
-from crawler_common import write_json
+from crawler_common import safe_filename, write_json
 from login import ensure_login
-from output_paths import safe_filename
 from session import VideoSession
 
 
@@ -208,9 +207,9 @@ def main():
     )
     args = parser.parse_args()
 
-    ensure_login()
+    state = ensure_login()
     SubtitleCrawler(
-        VideoSession(args.bvid),
+        VideoSession(args.bvid, state),
         page_range=args.page_range,
         language=args.language,
     ).run()

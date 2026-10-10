@@ -59,7 +59,7 @@ JSON 或 CSV。项目同时提供命令行和 Qt 图形界面。
 | 热搜搜索 | [`/x/web-interface/search/square`](https://api.bilibili.com/x/web-interface/search/square?limit=10) | `hot_list.csv` 和搜索 CSV |
 | UP 主公开视频 | [`/x/space/wbi/arc/search`](https://api.bilibili.com/x/space/wbi/arc/search?mid=486906719&pn=1&ps=30&order=pubdate) | `videos_{时间}_{数据量}.csv` |
 | 软字幕 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | JSON、SRT |
-| 弹幕 | [播放器 `/seg.so` 请求](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `danmaku_{BV号}*.csv` |
+| 弹幕 | [弹幕分段 `/seg.so`](https://api.bilibili.com/x/v2/dm/wbi/web/seg.so?type=1&oid=137649199&segment_index=1) | `danmaku_{分P标题}.csv` |
 
 ## 接口总览
 
@@ -89,8 +89,8 @@ https://api.bilibili.com
 | 搜索视频 | [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=被骗的小曲&page=1&page_size=20) | `search_type`、`keyword`、`page`、`page_size` | 是 | `search_videos()` |
 | 获取 UP 主公开视频 | [`/x/space/wbi/arc/search`](https://api.bilibili.com/x/space/wbi/arc/search?mid=486906719&pn=1&ps=30&order=pubdate) | `mid`、`pn`、`ps`、`order` | 是 | `get_user_videos()` |
 | 获取分 P 字幕轨道 | [`/x/player/wbi/v2`](https://api.bilibili.com/x/player/wbi/v2?bvid=BV1GJ411x7h7&cid=137649199) | `bvid`、`cid` | 是 | `get_player_subtitles()` |
-| 获取一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `oid`、`type`、`mode`、`next`、`pagination_str`、`ps` | 是 | `request_comment_page()` |
-| 获取弹幕分段 | [`/x/v2/dm/web/seg.so`](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1) | `oid`、`type`、`segment_index` | 否 | `crawler_dm.py` 监听播放器响应 |
+| 获取一级评论 | [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30) | `oid`、`type`、`mode`、`next`、`pagination_str`、`ps` | 是 | `fetch_comment_page()` |
+| 获取弹幕分段 | [`/x/v2/dm/wbi/web/seg.so`](https://api.bilibili.com/x/v2/dm/wbi/web/seg.so?type=1&oid=137649199&segment_index=1) | `oid`、`pid`、`segment_index`、`ps`、`pe` | 是 | `fetch_danmaku_segment()` |
 
 需要 WBI 的接口会在运行时加入：
 
@@ -134,8 +134,7 @@ w_rid=基于排序参数和 mixin_key 计算的 MD5
 ### 环境要求
 
 - Python 3.14 或更高版本。
-- Google Chrome、Microsoft Edge 或 Playwright Chromium，供弹幕采集和
-  人工登录使用。
+- Google Chrome、Microsoft Edge 或 Playwright Chromium，供人工登录使用。
 - 可访问 Bilibili 的网络环境。
 - 一个可正常登录的 Bilibili 账号。
 
@@ -228,12 +227,10 @@ python qt_app.py
 | --- | --- | --- |
 | `-p` | 无 | 字幕或弹幕分 P 范围 |
 | `--search-page` | 无 | 关键词搜索页范围，单值 `10` 表示 `1-10` |
-| `--page-size` | `20` / `30` | 关键词和热搜搜索默认 `20`，UP 主视频默认 `30`；最大 `50` |
-| `-w` | `2` | 关键词搜索、UP 主视频或热搜关键词内部并发数，限制在 `1` 到 `10` |
+| `--page-size` | `50` | 关键词搜索、热搜搜索和 UP 主视频默认 `50`；最大 `50` |
+| `-w` | `2` | 关键词搜索、UP 主视频或热搜关键词内部并发数，限制在 `1` 到 `5` |
 | `--limit` | `10` | 参与搜索的热搜词数量，最大 `50` |
 | `--language` | 无 | 字幕语言，例如 `zh-CN` 或 `ai-zh` |
-| `--comment-mode` | `time` | 评论排序，`time` 按时间，`hot` 按热门 |
-| `--comment-page-size` | `30` | 评论每页数量，范围 `1-30` |
 
 首次运行或登录失效时，任意需要登录的命令都会打开可用浏览器，等待人工
 登录，并保存新的 `bilibili_state.json`。
@@ -254,8 +251,8 @@ bilibili -i BV1GJ411x7h7
 # 单独采集一级评论
 bilibili -c BV1GJ411x7h7
 
-# 按热门排序采集评论，每页 20 条
-bilibili -c BV1GJ411x7h7 --comment-mode hot --comment-page-size 20
+# 按时间排序采集评论
+bilibili -c BV1GJ411x7h7
 
 # 采集 P1-P3 的指定语言文字稿
 bilibili -s BV1GJ411x7h7 -p 1,3 --language ai-zh
@@ -296,28 +293,28 @@ bilibili -k "Python" --search-page 2,4
 
 | 文件 | 作用 |
 | --- | --- |
-| `config.py` | 项目根目录、默认 BVID、页码范围等公共配置和参数解析 |
-| `output_paths.py` | `output/` 目录结构、路径构造函数和目录查找 |
+| `config.py` | 项目根目录、默认 BVID、输出目录常量、页码范围等公共配置和参数解析 |
 | `session.py` | 采集会话，缓存 cookie、WBI 密钥、视频信息和输出目录 |
 | `main.py` | 命令行入口，负责参数校验和功能分发 |
 | `login.py` | 保存登录状态，并依次尝试 Chrome、Edge 和 Playwright Chromium |
-| `bilibili_api.py` | HTTP 请求、WBI 签名、视频接口和搜索接口 |
+| `bilibili_api.py` | HTTP 请求、WBI 签名，以及视频、评论、字幕、弹幕和搜索接口 |
 | `crawler_info.py` | 保存视频信息和 UP 主粉丝数 |
 | `crawler_comment.py` | 使用 WBI 游标采集一级评论 |
 | `crawler_search.py` | 关键词视频搜索 |
 | `crawler_hot.py` | 热搜批量视频搜索 |
 | `crawler_up.py` | UP 主全部公开视频 |
-| `crawler_common.py` | 爬虫共用的请求、并发、数据构建和文件输出 |
+| `crawler_common.py` | 爬虫共用的请求、并发、数据构建，以及文件名/时间戳等文件输出工具 |
 | `crawler_subtitle.py` | 下载软字幕并转换 SRT |
-| `crawler_dm.py` | 使用 Playwright 采集弹幕 |
+| `crawler_dm.py` | 直连弹幕分段接口采集弹幕 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
 | `qt_app.py` | Qt 图形界面的兼容启动入口 |
 | `qt_ui/app.py` | 创建 `QApplication` 并启动主窗口 |
 | `qt_ui/main_window.py` | 组织 GUI 工作区，并通过 `QProcess` 调用命令行入口 |
-| `qt_ui/dialogs.py` | 数据浏览、数据预览和任务完成弹窗 |
+| `qt_ui/dialogs/` | 数据浏览、数据预览、加载和补全弹窗 |
 | `qt_ui/formatting.py` | 字段名称、数字和时间格式转换 |
 | `qt_ui/theme.py` | Qt 全局样式 |
+| `qt_ui/system_shell.py` | 打开目录、前置资源管理器窗口等 Windows 互操作 |
 | `assets/` | 图形界面使用的图标和图片资源 |
 | `pyproject.toml` | Python 依赖、`bilibili` 和 `bilibili-gui` 命令入口 |
 | `bilibili_state.json` | Playwright 登录状态，属于敏感文件 |
@@ -384,20 +381,29 @@ bilibili_state.json
 
 ## 公共接口层
 
-`bilibili_api.py` 提供通用请求、WBI 签名、视频信息、搜索和字幕接口。
-项目路径、文件命名和输出文件处理不属于 API 层，分别放在 `output_paths.py`
-和 `crawler_common.py`。一次运行的登录态、WBI 密钥和视频信息由
-`session.py` 的 `Session` / `VideoSession` 持有，各采集任务共用同一个会话，
-避免重复读盘和重复请求。
+`bilibili_api.py` 提供通用请求、WBI 签名，以及视频、评论、字幕、弹幕和搜索
+接口。
+输出目录常量放在 `config.py`，文件名和时间戳工具放在 `crawler_common.py`，
+各目录构造函数就近放在用它的模块里，都不属于 API 层。一次运行的登录态、
+WBI 密钥和视频信息由 `session.py` 的 `Session` / `VideoSession` 持有，
+各采集任务共用同一个会话，避免重复读盘和重复请求。
 
 ### HTTP 请求
 
-`request_json(url, cookie)` 使用标准库 `urllib.request` 发起请求，并设置：
+`bilibili_api.py` 用标准库 `http.client` 发请求，并按线程缓存连接复用。
+底层的 `_request(url, cookie, accept)` 返回 `(状态码, 原始响应字节)`，上面
+分两层：
+
+- `request_json(url, cookie)`：解析 JSON，检查 `code`，只返回 `data`。
+- `request_bytes(url, cookie)`：返回原始字节，`HTTP 304` 按空结果处理，
+  弹幕分段接口用它。
+
+请求统一设置：
 
 - `Cookie`
-- `User-Agent`
+- `User-Agent: Mozilla/5.0`
 - `Referer: https://www.bilibili.com/`
-- 请求超时：20 秒
+- 请求超时：20 秒；连接层异常最多尝试 2 次
 
 Bilibili JSON 接口通常返回：
 
@@ -410,7 +416,7 @@ Bilibili JSON 接口通常返回：
 }
 ```
 
-函数只返回 `data`：
+`request_json()` 的行为：
 
 - `code == 0` 时返回业务数据。
 - HTTP 错误、JSON 解析失败或 `code != 0` 时抛出 `RuntimeError`。
@@ -432,6 +438,7 @@ Bilibili JSON 接口通常返回：
 4. 计算 MD5，得到 `w_rid`。
 5. 返回带 `wts` 和 `w_rid` 的查询字符串。
 
+`build_wbi_url(path, params, mixin_key)` 把路径和签名后的查询串拼成完整 URL；
 `request_wbi_json(path, params, cookie, mixin_key)` 先生成签名，再调用
 `request_json()`。
 
@@ -467,7 +474,7 @@ Bilibili JSON 接口通常返回：
 [`/x/web-interface/wbi/search/type`](https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword=Python&page=1&page_size=20)。
 该接口需要动态 WBI 参数，直接点击示例链接通常只会看到缺少签名的错误。
 
-`search_videos(keyword, cookie, mixin_key, page=1, page_size=20)` 使用关键参数：
+`search_videos(keyword, cookie, mixin_key, page=1, page_size=50)` 使用关键参数：
 
 | 参数 | 说明 |
 | --- | --- |
@@ -496,26 +503,31 @@ Bilibili JSON 接口通常返回：
 返回当前分 P 的字幕轨道。当前实现使用每个轨道中的 `subtitle_url` 下载
 字幕正文，不处理加密的 `subtitle_url_v2`。
 
-### 输出路径函数
+### 输出路径
 
-`output_paths.py` 集中定义 `output/` 的目录常量、路径构造函数，以及界面回查
-数据用的查找函数。
+输出目录常量（`OUTPUT_DIR`、`VIDEO_OUTPUT_DIR`、`SEARCH_OUTPUT_DIR`、
+`UP_OUTPUT_DIR`、`HOT_OUTPUT_DIR`）统一定义在 `config.py`；文件名和时间戳
+工具（`safe_filename`、`run_timestamp`、`timestamped_path`）在
+`crawler_common.py`。各目录构造函数就近放在使用它的模块里：
 
-| 函数 | 作用 |
-| --- | --- |
-| `safe_filename(value)` | 替换 Windows 文件名非法字符，并清理末尾空格和句点 |
-| `get_video_dir(video_info)` | 生成 `output/bvid/{UP主}_{标题}_{BV号}/` |
-| `get_search_dir(keyword)` | 生成 `output/search/{关键词}/` |
-| `get_up_dir(mid, name)` | 生成 `output/up/{MID}+{名字}/` |
-| `get_hot_run_dir(run_time)` | 生成 `output/hot_search/{运行时间}/` |
-| `timestamped_path(...)` / `run_timestamp()` | 生成带运行时间的文件名 |
+| 函数 | 所在模块 | 作用 |
+| --- | --- | --- |
+| `safe_filename(value)` | `crawler_common.py` | 替换 Windows 文件名非法字符，并清理末尾空格和句点 |
+| `timestamped_path(...)` / `run_timestamp()` | `crawler_common.py` | 生成带运行时间的文件名 |
+| `get_video_dir(video_info)` | `session.py` | 生成 `output/video/{BV号}_{UP主}/` |
+| `get_danmaku_paths(video_dir, pages)` | `crawler_dm.py` | 生成每个分 P 的弹幕 CSV 路径 |
+| `get_search_dir(keyword)` | `crawler_search.py` | 生成 `output/search/{关键词}/` |
+| `get_up_dir(mid, name)` | `crawler_up.py` | 生成 `output/up/{MID}+{名字}/` |
+| `get_hot_run_dir(run_time)` | `crawler_hot.py` | 生成 `output/hot/{运行时间}/` |
 
-界面侧还会用到 `video_project_dir()`、`search_project_dir()`、
-`find_user_dir()`、`hot_project_dir()`、`latest_search_keyword()`、
-`latest_user_mid()` 等查找函数。
+界面回查用的 `video_project_dir()`、`search_project_dir()`、`find_user_dir()`、
+`hot_project_dir()`、`latest_search_keyword()`、`latest_user_mid()` 放在
+`qt_ui/main_window.py`；`detect_search_keyword()` 在 `qt_ui/dialogs/preview.py`，
+`relative_display()` 在 `qt_ui/dialogs/completion.py`，`is_subtitle_json()` 在
+`qt_ui/dialogs/browser.py`。
 
-`get_video_dir()` 读取视频数据的 `owner.name`、`title` 和 `bvid`。缺少字段时
-分别使用 `unknown`、`untitled` 和 `unknown`。
+`get_video_dir()` 读取视频数据的 `owner.name` 和 `bvid`，缺少字段时使用
+`unknown`。
 
 ## 视频信息
 
@@ -564,6 +576,8 @@ Bilibili JSON 接口通常返回：
 使用 WBI 游标分页接口
 [`/x/v2/reply/wbi/main`](https://api.bilibili.com/x/v2/reply/wbi/main?oid=80433022&type=1&mode=2&next=0&ps=30)。
 直接点击示例链接通常只会看到缺少签名的错误，实际请求必须动态生成 WBI 参数。
+接口函数是 `bilibili_api.fetch_comment_page()`，`crawler_comment.py` 调用它时
+复用 `crawler_common.request_with_retry()` 做重试。
 
 关键参数：
 
@@ -571,7 +585,7 @@ Bilibili JSON 接口通常返回：
 | --- | --- |
 | `oid` | 视频 `aid`，不能直接填写 `bvid` |
 | `type=1` | 评论对象类型为视频 |
-| `mode` | `2` 按时间排序，`3` 按热门排序 |
+| `mode` | 本项目固定为 `2`，按时间排序 |
 | `next` | 下一页游标 |
 | `pagination_str` | 下一页 offset |
 | `ps=30` | 每页评论数量，默认 `30`，最大 `30` |
@@ -615,8 +629,10 @@ Bilibili JSON 接口通常返回：
 | --- | --- | --- |
 | `0` | 默认排序 | 通常会被服务端归一到热门排序 |
 | `1` | 综合排序 | 名称通常为“评论”，顺序不稳定 |
-| `2` | 按时间排序 | 名称通常为“最新评论”，本项目默认使用 |
+| `2` | 按时间排序 | 名称通常为“最新评论”，本项目固定使用 |
 | `3` | 按热度排序 | 名称通常为“热门评论”，顺序会随点赞变化 |
+
+本项目只使用 `mode=2` 的时间排序，不提供热门排序。
 
 ### 文本和图片处理
 
@@ -640,8 +656,10 @@ Bilibili JSON 接口通常返回：
 | `mid` | `comment.mid` | `int` | 发表评论的用户 ID | `None` |
 | `user_name` | `comment.member.uname` | `str` | 评论者昵称，经过 `normalize_text()` 清理 | 空字符串 |
 | `user_level` | `comment.member.level_info.current_level` | `int` | 评论者当前等级，通常为 `0` 到 `6` | `0` |
+| `sex` | `comment.member.sex` | `str` | 评论者性别，接口返回 `男`、`女` 或 `保密` | 空字符串 |
+| `vip` | `comment.member.vip.vipStatus` | `int` | 是否为当前有效的大会员，`1` 是，`0` 否 | `0` |
 | `message` | `comment.content.message` | `str` | 评论正文，转换为适合 CSV 的单行文本 | 空字符串 |
-| `ctime` | `comment.ctime` | `int` | 评论发布时间，秒级 Unix 时间戳 | `0` |
+| `ctime_text` | `comment.ctime` | `str` | 评论发布时间，按本机时区转成 `%Y-%m-%d %H:%M:%S` 可读格式 | 空字符串 |
 | `like` | `comment.like` | `int` | 评论点赞数 | `0` |
 | `reply_count` | `comment.count` | `int` | 评论下的回复数量；接口字段名是 `count` | `0` |
 | `state` | `comment.state` | `int` | 评论状态；`0` 通常表示正常 | `0` |
@@ -667,7 +685,7 @@ comments_{BV号}.csv
 CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` 会使用
 `|` 连接多个图片地址。
 
-`CommentCrawler(session, mode=2, page_size=30).run()` 返回 CSV 的完整路径。
+`CommentCrawler(session, page_size=30).run()` 返回 CSV 的完整路径。
 采集过程中会逐页追加结果。评论使用 WBI 游标分页，必须顺序请求，因此没有
 并发参数。
 
@@ -700,11 +718,13 @@ CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` �
 `run_concurrently()` 在并发数大于 `1` 时使用 `ThreadPoolExecutor` 处理输入，
 并按原顺序返回结果；并发数为 `1` 时直接顺序执行，不创建线程池。
 
-`request_with_retry()` 捕获 `RuntimeError`，最多尝试三次：
+`request_with_retry()` 捕获 `RuntimeError`，最多尝试五次：
 
-- 第一次失败后等待 1 秒。
-- 第二次失败后等待 2 秒。
-- 第三次失败时重新抛出异常。
+- 第 1 次失败后等待 1 秒。
+- 第 2 次失败后等待 2 秒。
+- 第 3 次失败后等待 3 秒。
+- 第 4 次失败后等待 4 秒。
+- 第 5 次失败时重新抛出异常。
 
 粉丝数使用安全包装函数。单个粉丝请求失败时不会中断整个搜索任务，而是
 将对应作者的粉丝数回退为 `0`。
@@ -735,7 +755,7 @@ CSV 列顺序与 `parse_comment()` 的输出字段一致，其中 `image_urls` �
 
 ### UP 主全部视频
 
-`UpVideosCrawler(session, mid, page_size=30, workers=2).run()` 通过 UP 主
+`UpVideosCrawler(session, mid, page_size=50, workers=2).run()` 通过 UP 主
 `mid` 读取其公开视频列表。第一次请求取得总数后，剩余分页并发抓取，并按
 `bvid` 去重。CSV 字段与关键词搜索一致，输出到：
 
@@ -748,7 +768,7 @@ output/up/{MID}+{UP主名字}/videos_{时间}_{数据量}.csv
 
 ### 热搜搜索
 
-`HotSearchCrawler(session, limit=10, page=1, pages=1, page_size=20, workers=2)`：
+`HotSearchCrawler(session, limit=10, page=1, pages=1, page_size=50, workers=2)`：
 
 1. 请求热搜列表。
 2. 按榜单顺序串行处理热搜词。
@@ -781,8 +801,8 @@ output/search/{关键词}/search_{时间}_{数据量}.csv
 热搜搜索：
 
 ```text
-output/hot_search/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
-output/hot_search/{运行时间}/hot_list.csv
+output/hot/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
+output/hot/{运行时间}/hot_list.csv
 ```
 
 运行时间格式为 `YYYYMMDD_HHMMSS`。
@@ -875,14 +895,13 @@ JSON 外层字段：
 
 ## 弹幕采集
 
-`crawler_dm.py` 的 `DanmakuCrawler` 使用 Playwright 打开视频页面，监听播放器
-发出的弹幕请求。
+`crawler_dm.py` 的 `DanmakuCrawler` 直连弹幕分段接口，不打开播放器。
 
 ### 数据来源
 
-播放器请求
-[`/x/v2/dm/web/seg.so`](https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=137649199&segment_index=1)。
-该接口通常还依赖浏览器请求头和登录状态。
+[`/x/v2/dm/wbi/web/seg.so`](https://api.bilibili.com/x/v2/dm/wbi/web/seg.so?type=1&oid=137649199&segment_index=1)
+是播放器当前使用的弹幕分段接口，需要 WBI 签名和有效登录状态。请求时每个
+分 P 用 `cid` 作为 `oid`，视频 `aid` 作为 `pid`。
 
 响应是 Protobuf，由 `dm_pb2.DmSegMobileReply` 解码。每个弹幕元素由
 `DanmakuElem` 描述。
@@ -906,25 +925,29 @@ JSON 外层字段：
 
 ### 采集流程
 
-1. 使用登录状态打开可用浏览器。
-2. 监听 `/seg.so` 响应。
-3. 校验响应中的 `oid` 是否等于当前分 P 的 `cid`。
+1. 从视频信息取每个分 P 的 `cid`、`aid` 和时长。
+2. 按每段 360 秒计算总段数 `ceil(duration / 360)`。
+3. 逐段请求：带 `segment_index`、`pull_mode=1` 和该段的 `ps`、`pe`（毫秒），
+   一起做 WBI 签名。
 4. 解码 Protobuf。
 5. 按弹幕 ID、时间点和内容去重。
-6. 追加写入 CSV。
+6. 追加写入 CSV；分段越界时接口返回 304，按空结果处理。
 
-播放器通常一次加载约 120 秒的弹幕。程序每 120 秒跳转一次播放位置，触发
-不同时间段的请求。采集结果可能受播放器策略、网络状态和视频长度影响。
+采集结果可能受网络状态、登录状态和接口风控影响。每段请求复用
+`request_with_retry()`（最多五次，失败后等 1、2、3、4 秒），重试耗尽才算一段
+失败；分段之间停顿 `0.5` 秒，连续三段失败时中止该分 P。
 
 ### 弹幕 CSV 字段
 
 | 列名 | 含义 |
 | --- | --- |
-| `时间(ms)` | 弹幕出现时间 |
-| `内容` | 弹幕文字 |
-| `颜色` | 十进制 RGB 颜色 |
-| `模式` | 弹幕显示模式 |
-| `用户Hash` | 发送用户的匿名 Hash |
+| `弹幕id` | 弹幕唯一 ID |
+| `出现时间` | 弹幕在视频中的出现时间，格式 `HH:MM:SS` |
+| `权重` | 弹幕权重，越高越优先 |
+| `内容` | 弹幕文字，字幕弹幕为 JSON 参数 |
+| `哈希` | 发送用户的匿名 Hash |
+| `发送时间` | 发送弹幕的时间，中国时区 `YYYY-MM-DD HH:MM:SS` |
+| `弹幕池` | 0 普通，1 字幕，2 特殊 |
 
 `bilibili -d` 运行时可以传入 BV 号和 `-p START,END`。
 
@@ -934,29 +957,29 @@ JSON 外层字段：
 
 ```text
 output/
-├── bvid/          视频数据
+├── video/         单视频数据
 ├── search/        关键词搜索
 ├── up/            UP 主视频
-└── hot_search/    热搜搜索
+└── hot/           热搜搜索
 ```
 
 ### 视频目录
 
 ```text
-output/bvid/
-└── {UP主}_{标题}_{BV号}/
+output/video/
+└── {BV号}_{UP主}/
     ├── video_info.json
     ├── comments_{BV号}.csv
     ├── subtitle_{BV号}_p1_{语言}.json
     ├── subtitle_{BV号}_p1_{语言}.srt
-    ├── danmaku_{BV号}.csv
-    └── danmaku_{BV号}_p1.csv
+    └── danmaku_{分P标题}.csv
 ```
 
-单 P 视频的弹幕文件为 `danmaku_{BV号}.csv`。多 P 视频会为每个分 P 生成带
-`_p{分P}` 后缀的文件。
+弹幕文件按分 P 标题命名；标题为空时使用 `danmaku_p{分P号}.csv`，标题重复时
+追加 `_p{分P号}` 区分。
 
-标题中的 `?`、`:`、`/`、`\`、`|`、`*` 等非法文件名字符会替换为 `_`。
+UP 主名和分 P 标题中的 `?`、`:`、`/`、`\`、`|`、`*` 等非法文件名字符会
+替换为 `_`。
 
 ### 搜索目录
 
@@ -969,7 +992,7 @@ output/up/
 └── {MID}+{UP主名字}/
     └── videos_{时间}_{数据量}.csv
 
-output/hot_search/
+output/hot/
 └── {运行时间}/
     ├── hot_list.csv
     └── {热搜词}/
@@ -983,11 +1006,11 @@ output/hot_search/
 | 模块 | 行为 |
 | --- | --- |
 | `login.py` | 服务端确认 Cookie 失效时重新登录；网络异常时先按已登录处理 |
-| `crawler_comment.py` | 评论页请求最多重试三次，每次间隔一秒 |
-| `crawler_common.py` | 搜索请求最多重试三次，等待时间依次为 1 秒和 2 秒 |
+| `crawler_comment.py` | 评论页请求复用 `request_with_retry()` 重试 |
+| `crawler_common.py` | 搜索请求最多尝试五次，等待时间依次为 1、2、3、4 秒 |
 | `crawler_common.py` | 搜索结果直接生成数据行，粉丝数失败回退为 `0` |
 | `crawler_subtitle.py` | 单条字幕缺少 `subtitle_url` 时跳过 |
-| `crawler_dm.py` | 只处理状态正常的 `/seg.so` 响应 |
+| `crawler_dm.py` | 分段请求复用 `request_with_retry()`，连续三段失败后中止 |
 
 当前没有统一的全局限速器。批量搜索或大视频评论采集时，应主动降低并发数。
 
@@ -998,7 +1021,7 @@ output/hot_search/
 - 视频信息是请求时的快照，不会自动更新。
 - 评论只包含一级评论，不包含完整子评论正文。
 - 评论图片只保存 URL，CDN 地址可能失效。
-- 弹幕采用分段跳转采集，可能存在延迟、重复或遗漏。
+- 弹幕按 6 分钟分段直连接口采集，可能存在重复或遗漏。
 - 当前软字幕接口可能返回空列表。
 - [`/x/player/v2`](https://api.bilibili.com/x/player/v2?bvid=BV1GJ411x7h7&cid=137649199) 可能返回错误缓存字幕，因此项目不使用该接口。
 - 音乐视频的 AI 字幕经常只输出“音乐”，不能当作完整歌词。

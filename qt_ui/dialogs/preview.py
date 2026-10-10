@@ -1,342 +1,79 @@
-"""Table preview and directory browser dialogs."""
+"""CSV/JSON 数据预览弹窗。"""
 
-import csv
-import json
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QAbstractTableModel,
-    QModelIndex,
-    QTimer,
     Qt,
+    QTimer,
     QUrl,
 )
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPalette
+from PySide6.QtGui import (
+    QDesktopServices,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QStackedWidget,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QTableView,
-    QTableWidget,
-    QTableWidgetItem,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from output_paths import (
-    OUTPUT_DIR,
-    detect_search_keyword,
-    is_subtitle_json,
-    relative_display,
+from bilibili_api import get_up_follower_count, get_video_info
+from config import HOT_OUTPUT_DIR, SEARCH_OUTPUT_DIR
+from qt_ui.dialogs.constants import (
+    PREVIEW_ROW_LIMIT,
+    TABLE_COLUMN_LIMIT,
+    WRAP_ROW_LIMIT,
+)
+from qt_ui.dialogs.loaders import load_preview
+from qt_ui.dialogs.models import (
+    LinkItemDelegate,
+    PreviewTableModel,
 )
 from qt_ui.formatting import (
     COLUMN_LABELS,
     KEY_COLUMN_ORDER,
-    NUMBER_COLUMNS,
     format_number,
     format_preview_value,
-    friendly_file_name,
-    friendly_video_name,
     shorten_user_hash,
 )
-from qt_ui.theme import APP_STYLE, icon
-
-PREVIEW_ROW_LIMIT = 5000
-# 勾选「只显示关键列」时，表格保留最前面这些列
-TABLE_COLUMN_LIMIT = 6
-# 行数不超过这个值时，长文本换行完整显示（行数多则保持单行定高，避免卡顿）
-WRAP_ROW_LIMIT = 200
-# 这些后缀在数据浏览里可以直接预览，不再交给系统默认程序
-BROWSABLE_SUFFIXES = {".csv", ".json", ".srt"}
+from qt_ui.theme import (
+    APP_STYLE,
+    icon,
+)
 
 
-class CompletionDialog(QDialog):
-    """任务完成后的统一提示框。"""
+def detect_search_keyword(path):
+    """从数据文件路径推断所属搜索关键词，非搜索数据返回 None。"""
+    path = Path(path)
 
-    def __init__(self, task_name, path=None, parent=None):
-        super().__init__(parent)
-        self.path = Path(path) if path else None
-        self.setObjectName("CompletionDialog")
-        self.setWindowTitle("任务完成")
-        self.setModal(True)
-        self.setFixedWidth(440)
-        self.setStyleSheet(APP_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 20)
-        layout.setSpacing(14)
-
-        header = QHBoxLayout()
-        header.setSpacing(14)
-
-        badge = QLabel("✓")
-        badge.setObjectName("CompletionBadge")
-        badge.setFixedSize(46, 46)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
-
-        heading = QVBoxLayout()
-        heading.setSpacing(3)
-
-        title = QLabel("任务已完成")
-        title.setObjectName("CompletionTitle")
-        heading.addWidget(title)
-
-        message = QLabel(f"{task_name}已完成。")
-        message.setObjectName("CompletionMessage")
-        message.setWordWrap(True)
-        heading.addWidget(message)
-        header.addLayout(heading, 1)
-        layout.addLayout(header)
-
-        panel = QFrame()
-        panel.setObjectName("CompletionPanel")
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(14, 12, 14, 12)
-        panel_layout.setSpacing(5)
-
-        panel_label = QLabel("保存位置" if path else "任务状态")
-        panel_label.setObjectName("CompletionPanelLabel")
-        panel_layout.addWidget(panel_label)
-
-        display_path = "任务已成功结束"
-
-        if path:
-            display_path = relative_display(path)
-
-        panel_value = QLabel(display_path)
-        panel_value.setObjectName("CompletionPath")
-        panel_value.setWordWrap(True)
-        panel_value.setToolTip(str(path) if path else "")
-        panel_value.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        panel_layout.addWidget(panel_value)
-        layout.addWidget(panel)
-
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-
-        if path:
-            open_button = QPushButton("查看数据")
-            open_button.setMinimumWidth(88)
-            open_button.setToolTip("在数据查看里打开这次产出的目录")
-            open_button.clicked.connect(self._open_data_view)
-            actions.addWidget(open_button)
-
-        close_button = QPushButton("完成")
-        close_button.setObjectName("PrimaryButton")
-        close_button.setMinimumWidth(96)
-        close_button.clicked.connect(self.accept)
-        actions.addWidget(close_button)
-        layout.addLayout(actions)
-
-    def _open_data_view(self):
-        """先关掉完成提示，再在程序里打开数据查看。"""
-        parent = self.parent()
-        self.accept()
-
-        if self.path is None or parent is None:
-            return
-
-        DataBrowserDialog(parent, initial_path=self.path).exec()
-
-
-class PreviewTableModel(QAbstractTableModel):
-    """按需向表格视图提供数据，支持筛选和排序。"""
-
-    def __init__(
-        self,
-        headers,
-        rows,
-        parent=None,
-        full_rows=None,
-        sort_keys=None,
-        raw_headers=None,
-    ):
-        super().__init__(parent)
-        self.headers = headers
-        self.raw_headers = raw_headers or headers
-        self._display = rows
-        self._full = full_rows or rows
-        self._sort = sort_keys or [list(row) for row in rows]
-        self._view = list(range(len(self._display)))
-        self._sort_column = None
-        self._sort_order = Qt.SortOrder.AscendingOrder
-        self.numeric_columns = {
-            index
-            for index, header in enumerate(self.raw_headers)
-            if header in NUMBER_COLUMNS
-        }
-
-    def rowCount(self, parent=QModelIndex()):
-        if parent.isValid():
-            return 0
-
-        return len(self._view)
-
-    def columnCount(self, parent=QModelIndex()):
-        if parent.isValid():
-            return 0
-
-        return len(self.headers)
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid():
-            return None
-
-        row = self._view[index.row()]
-        column = index.column()
-
-        if role == Qt.ItemDataRole.DisplayRole:
-            return self._display[row][column]
-
-        if role == Qt.ItemDataRole.ToolTipRole:
-            value = self._full[row][column]
-
-            if self.raw_headers[column] == "cover_url":
-                return f"点击打开封面\n{value}"
-
-            return value
-
-        if role == Qt.ItemDataRole.TextAlignmentRole:
-            if column in self.numeric_columns:
-                return int(
-                    Qt.AlignmentFlag.AlignRight
-                    | Qt.AlignmentFlag.AlignVCenter
-                )
-
-            return int(
-                Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignVCenter
-            )
-
+    if path.name == "hot_list.csv":
         return None
 
-    def headerData(
-        self,
-        section,
-        orientation,
-        role=Qt.ItemDataRole.DisplayRole,
-    ):
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
+    parent = path.parent
 
-        if orientation == Qt.Orientation.Horizontal:
-            return self.headers[section]
+    if parent.parent.name == SEARCH_OUTPUT_DIR.name:
+        return parent.name
 
-        return section + 1
+    if parent.parent.parent.name == HOT_OUTPUT_DIR.name:
+        return parent.name
 
-    def sort(self, column, order=Qt.SortOrder.AscendingOrder):
-        if not self._view or column < 0 or column >= len(self.headers):
-            return
-
-        self._sort_column = column
-        self._sort_order = order
-
-        self.beginResetModel()
-        self._apply_sort()
-        self.endResetModel()
-
-    def set_filter(self, text):
-        """按关键字筛选，命中任意一列即保留。返回筛选后的行数。"""
-        text = str(text or "").strip().casefold()
-
-        self.beginResetModel()
-
-        if not text:
-            self._view = list(range(len(self._display)))
-        else:
-            self._view = [
-                index
-                for index, row in enumerate(self._display)
-                if any(text in str(cell).casefold() for cell in row)
-            ]
-
-        self._apply_sort()
-        self.endResetModel()
-        return len(self._view)
-
-    def _apply_sort(self):
-        column = self._sort_column
-
-        if column is None:
-            return
-
-        self._view.sort(
-            key=lambda row: self._sort[row][column],
-            reverse=self._sort_order == Qt.SortOrder.DescendingOrder,
-        )
-
-    def full_row(self, row):
-        """返回视图第 `row` 行对应的完整内容（未经截断）。"""
-        return self._full[self._view[row]]
-
-    def full_value(self, row, column):
-        return self._full[self._view[row]][column]
-
-
-class SortableTableWidgetItem(QTableWidgetItem):
-    """用显式排序键比较表格项，保证时间等字段按真实值排序。"""
-
-    def __init__(self, text="", sort_key=None):
-        super().__init__(text)
-        self.sort_key = text.casefold() if sort_key is None else sort_key
-
-    def __lt__(self, other):
-        if not isinstance(other, SortableTableWidgetItem):
-            return super().__lt__(other)
-
-        return self.sort_key < other.sort_key
-
-
-class LinkItemDelegate(QStyledItemDelegate):
-    """给链接列增加颜色、下划线和悬浮反馈。"""
-
-    link_column: int | None
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.link_column = None
-
-    def paint(self, painter, option, index):
-        if index.column() != self.link_column:
-            super().paint(painter, option, index)
-            return
-
-        styled = QStyleOptionViewItem(option)
-        font = styled.font
-        font.setUnderline(True)
-        styled.font = font
-        hovered = bool(
-            styled.state & QStyle.StateFlag.State_MouseOver
-        )
-        color = QColor("#e95482" if hovered else "#2f6feb")
-        styled.palette.setColor(QPalette.ColorRole.Text, color)
-        styled.palette.setColor(QPalette.ColorRole.HighlightedText, color)
-
-        if hovered:
-            styled.backgroundBrush = QBrush(QColor("#fff0f5"))
-
-        super().paint(painter, styled, index)
+    return None
 
 
 class DataPreviewDialog(QDialog):
@@ -475,18 +212,7 @@ class DataPreviewDialog(QDialog):
 
     def _load_data(self):
         suffix = self.path.suffix.lower()
-
-        if suffix == ".csv":
-            raw_headers, headers, rows, truncated = self._load_csv()
-        elif suffix == ".json":
-            raw_headers, headers, rows, truncated = self._load_json()
-        elif suffix == ".srt":
-            raw_headers, headers, rows, truncated = self._load_srt()
-        else:
-            raw_headers = ["字段", "内容"]
-            headers = ["字段", "内容"]
-            rows = []
-            truncated = False
+        raw_headers, headers, rows, truncated = load_preview(self.path)
 
         raw_headers, headers, rows = self._prioritize_columns(
             raw_headers,
@@ -496,7 +222,7 @@ class DataPreviewDialog(QDialog):
         self.preview_raw_headers = raw_headers
 
         try:
-            modified_at = datetime.fromtimestamp(
+            modified_at = datetime.fromtimestamp(  # noqa: DTZ006
                 self.path.stat().st_mtime
             ).strftime("%Y-%m-%d %H:%M")
         except OSError:
@@ -543,7 +269,7 @@ class DataPreviewDialog(QDialog):
                 full_row.append(full_value)
                 display_row.append(
                     shorten_user_hash(full_value)
-                    if raw_header == "用户Hash"
+                    if raw_header in {"用户Hash", "哈希"}
                     else full_value
                 )
                 sort_row.append(
@@ -728,7 +454,7 @@ class DataPreviewDialog(QDialog):
         except ValueError:
             pass
 
-        if header in {"ctime", "published_at"}:
+        if header in {"ctime", "published_at", "发送时间"}:
             try:
                 if header == "ctime":
                     timestamp = float(numeric_text)
@@ -748,7 +474,11 @@ class DataPreviewDialog(QDialog):
             key_order = KEY_COLUMN_ORDER["comments"]
         elif "heat_score" in raw_headers and "keyword" in raw_headers:
             key_order = KEY_COLUMN_ORDER["hot_search"]
-        elif "时间(ms)" in raw_headers and "内容" in raw_headers:
+        elif "内容" in raw_headers and (
+            "弹幕池" in raw_headers
+            or "出现时间" in raw_headers
+            or "时间(ms)" in raw_headers
+        ):
             key_order = KEY_COLUMN_ORDER["danmaku"]
         elif "view" in raw_headers and "up_name" in raw_headers:
             key_order = KEY_COLUMN_ORDER["video_info"]
@@ -1035,120 +765,6 @@ class DataPreviewDialog(QDialog):
 
         return 720, 460
 
-    def _load_csv(self):
-        rows = []
-        truncated = False
-
-        with open(self.path, "r", newline="", encoding="utf-8-sig") as file:
-            reader = csv.DictReader(file)
-            raw_headers = reader.fieldnames or []
-            headers = [
-                COLUMN_LABELS.get(header, header)
-                for header in raw_headers
-            ]
-
-            for row in reader:
-                if len(rows) >= PREVIEW_ROW_LIMIT:
-                    truncated = True
-                    break
-
-                rows.append(
-                    [
-                        str(row.get(header) or "").replace("\x00", "")
-                        for header in raw_headers
-                    ]
-                )
-
-        return raw_headers, headers, rows, truncated
-
-    def _load_json(self):
-        with open(self.path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        if isinstance(data, dict) and isinstance(
-            data.get("subtitle"),
-            dict,
-        ):
-            subtitle = data.get("subtitle") or {}
-            body = subtitle.get("body") or []
-            raw_headers = ["序号", "开始", "结束", "字幕内容"]
-            headers = ["序号", "开始时间", "结束时间", "字幕内容"]
-            rows = []
-            truncated = False
-
-            for index, item in enumerate(body, start=1):
-                if len(rows) >= PREVIEW_ROW_LIMIT:
-                    truncated = True
-                    break
-
-                rows.append(
-                    [
-                        index,
-                        item.get("from", 0),
-                        item.get("to", 0),
-                        item.get("content", ""),
-                    ]
-                )
-
-            return raw_headers, headers, rows, truncated
-
-        if isinstance(data, dict):
-            raw_headers = list(data.keys())
-            headers = [
-                COLUMN_LABELS.get(key, key)
-                for key in raw_headers
-            ]
-            row = []
-
-            for key in raw_headers:
-                value = data.get(key)
-
-                if isinstance(value, (dict, list)):
-                    value = json.dumps(value, ensure_ascii=False)
-
-                row.append(value)
-
-            rows = [row]
-        else:
-            raw_headers = ["字段", "内容"]
-            headers = ["字段", "内容"]
-            rows = []
-
-        return raw_headers, headers, rows, False
-
-    def _load_srt(self):
-        """把 SRT 字幕拆成序号/开始/结束/内容四列。"""
-        raw_headers = ["序号", "开始", "结束", "字幕内容"]
-        headers = ["序号", "开始时间", "结束时间", "字幕内容"]
-        rows = []
-        truncated = False
-        text = self.path.read_text(encoding="utf-8-sig", errors="replace")
-
-        for block in re.split(r"\r?\n\s*\r?\n", text.strip()):
-            if len(rows) >= PREVIEW_ROW_LIMIT:
-                truncated = True
-                break
-
-            lines = [line for line in block.splitlines() if line.strip()]
-
-            if len(lines) < 3:
-                continue
-
-            match = re.match(
-                r"(.+?)\s*-->\s*(.+)",
-                lines[1],
-            )
-            start, end = (
-                (match.group(1).strip(), match.group(2).strip())
-                if match
-                else ("", "")
-            )
-            rows.append(
-                [len(rows) + 1, start, end, "\n".join(lines[2:])]
-            )
-
-        return raw_headers, headers, rows, truncated
-
     def _populate_video_overview(self, raw_headers, rows):
         if self.path.name != "video_info.json" or not rows:
             return False
@@ -1202,12 +818,34 @@ class DataPreviewDialog(QDialog):
 
         rows = [
             [
+                ("视频编号", video_info.get("bvid") or "未知"),
+                (
+                    "视频时长",
+                    format_preview_value(
+                        "duration_seconds",
+                        video_info.get("duration_seconds"),
+                    )
+                    or "未知",
+                ),
+            ],
+            [
                 ("UP 主", video_info.get("up_name") or "未知"),
                 (
                     "发布时间",
                     format_preview_value(
                         "published_at",
                         video_info.get("published_at"),
+                    )
+                    or "未知",
+                ),
+            ],
+            [
+                ("分区", video_info.get("partition") or "未知"),
+                (
+                    "投稿时间",
+                    format_preview_value(
+                        "published_at",
+                        video_info.get("created_at"),
                     )
                     or "未知",
                 ),
@@ -1246,6 +884,19 @@ class DataPreviewDialog(QDialog):
                 layout.addWidget(label, row_index, base_column)
                 layout.addWidget(value, row_index, base_column + 1)
 
+        # 封面地址很长，单独占一整行并允许选中复制
+        cover_row = len(rows) + 1
+        cover_label = QLabel("封面地址")
+        cover_label.setObjectName("VideoInfoLabel")
+        cover_value = QLabel(video_info.get("cover_url") or "未知")
+        cover_value.setObjectName("VideoInfoValue")
+        cover_value.setWordWrap(True)
+        cover_value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(cover_label, cover_row, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(cover_value, cover_row, 1, 1, 3)
+
         layout.setColumnStretch(1, 3)
         layout.setColumnStretch(3, 2)
         return panel
@@ -1254,398 +905,3 @@ class DataPreviewDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.path)))
 
 
-class DataBrowserDialog(QDialog):
-    """按 output 目录层级浏览数据。"""
-
-    def __init__(self, parent=None, initial_path=None):
-        super().__init__(parent)
-        self.output_dir = OUTPUT_DIR
-        self.root_dir = self.output_dir
-        self.current_dir = self.root_dir
-        self.browser_entries = []
-        self.browser_sort_column = 2
-        self.browser_sort_order = Qt.SortOrder.DescendingOrder
-
-        self.setWindowTitle("数据查看")
-        self.resize(920, 620)
-        self.setMinimumSize(620, 400)
-        self.setStyleSheet(APP_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
-
-        self.path_label = QLabel()
-        self.path_label.setObjectName("PreviewMeta")
-        layout.addWidget(self.path_label)
-
-        self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)
-
-        self.browser_page = QWidget()
-        browser_layout = QVBoxLayout(self.browser_page)
-        browser_layout.setContentsMargins(0, 0, 0, 0)
-        browser_layout.setSpacing(8)
-
-        self.browser_table = QTableWidget(0, 3)
-        self.browser_table.setHorizontalHeaderLabels(
-            ["名称", "目录概况", "更新时间"]
-        )
-        self.browser_table.verticalHeader().setVisible(False)
-        self.browser_table.verticalHeader().setDefaultSectionSize(32)
-        self.browser_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        self.browser_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.browser_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self.browser_table.setShowGrid(False)
-        self.browser_table.setAlternatingRowColors(True)
-        self.browser_table.horizontalHeader().setSectionsClickable(True)
-        self.browser_table.horizontalHeader().setSortIndicatorShown(True)
-        self.browser_table.horizontalHeader().setSortIndicator(
-            2,
-            Qt.SortOrder.DescendingOrder,
-        )
-        self.browser_table.horizontalHeader().sectionClicked.connect(
-            self._sort_browser
-        )
-        browser_header = self.browser_table.horizontalHeader()
-        browser_header.setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        browser_header.setStretchLastSection(False)
-        self.browser_table.setColumnWidth(0, 380)
-        self.browser_table.setColumnWidth(1, 260)
-        self.browser_table.setColumnWidth(2, 150)
-        self.browser_table.cellDoubleClicked.connect(
-            lambda row, column: self._activate_row(row)
-        )
-        browser_layout.addWidget(self.browser_table, 1)
-        self.stack.addWidget(self.browser_page)
-
-        self.tree_page = QWidget()
-        tree_layout = QVBoxLayout(self.tree_page)
-        tree_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.directory_tree = QTreeWidget()
-        self.directory_tree.setHeaderLabels(["全部目录", "数据文件"])
-        self.directory_tree.setAlternatingRowColors(True)
-        self.directory_tree.itemDoubleClicked.connect(
-            self._open_tree_directory
-        )
-        tree_layout.addWidget(self.directory_tree)
-        self.stack.addWidget(self.tree_page)
-
-        actions = QHBoxLayout()
-        self.parent_button = QPushButton("返回")
-        self.parent_button.setIcon(icon("icon-up.svg"))
-        self.parent_button.clicked.connect(self._go_parent)
-        actions.addWidget(self.parent_button)
-
-        self.toggle_tree_button = QPushButton("全部目录")
-        self.toggle_tree_button.clicked.connect(self._toggle_tree)
-        actions.addWidget(self.toggle_tree_button)
-        actions.addStretch(1)
-
-        self.view_button = QPushButton("打开")
-        self.view_button.setObjectName("PrimaryButton")
-        self.view_button.clicked.connect(self._view_selected)
-        actions.addWidget(self.view_button)
-
-        close_button = QPushButton("关闭")
-        close_button.clicked.connect(self.accept)
-        actions.addWidget(close_button)
-        layout.addLayout(actions)
-
-        start_path = self.root_dir
-
-        if initial_path is not None:
-            candidate = Path(initial_path).resolve()
-
-            if candidate.is_file():
-                candidate = candidate.parent
-
-            if (
-                candidate == self.root_dir
-                or self.root_dir in candidate.parents
-            ):
-                start_path = candidate
-
-        self._navigate_to(start_path, auto_open_single=False)
-
-    def _navigate_to(self, path, auto_open_single=True):
-        self.current_dir = Path(path).resolve()
-
-        if auto_open_single and self.current_dir != self.root_dir:
-            data_file = self._single_data_file(self.current_dir)
-
-            if data_file:
-                DataPreviewDialog(
-                    data_file,
-                    self,
-                    display_name=friendly_file_name(data_file),
-                ).exec()
-                return
-
-        self.stack.setCurrentWidget(self.browser_page)
-        self.toggle_tree_button.setText("全部目录")
-        self._populate_browser()
-
-    @staticmethod
-    def _single_data_file(directory):
-        data_files = []
-        child_directories = []
-
-        for path in directory.iterdir():
-            if path.name in {".git", "__pycache__"}:
-                continue
-
-            if path.is_dir():
-                child_directories.append(path)
-            elif (
-                path.suffix.lower() in BROWSABLE_SUFFIXES
-                and not is_subtitle_json(path)
-            ):
-                data_files.append(path)
-
-        if len(data_files) == 1 and not child_directories:
-            return data_files[0]
-
-        return None
-
-    def _populate_browser(self):
-        if self.current_dir.exists():
-            paths = sorted(
-                (
-                    path
-                    for path in self.current_dir.iterdir()
-                    if path.name not in {".git", "__pycache__"}
-                    and not is_subtitle_json(path)
-                ),
-                key=self._browser_sort_key,
-            )
-        else:
-            paths = []
-
-        self.browser_entries = paths
-        self.browser_table.setRowCount(len(paths))
-        relative_path = self.current_dir.relative_to(self.root_dir)
-        display_path = (
-            "output"
-            if not relative_path.parts
-            else f"output/{relative_path.as_posix()}"
-        )
-        self.path_label.setText(display_path)
-        self.parent_button.setEnabled(self.current_dir != self.root_dir)
-
-        for row, path in enumerate(paths):
-            if path.is_dir():
-                name = friendly_video_name(path.name)
-                summary = self._directory_summary(path)
-            else:
-                name = friendly_file_name(path)
-                summary = self._file_summary(path)
-
-            try:
-                modified_at = path.stat().st_mtime
-                time_text = self._friendly_time(modified_at)
-            except OSError:
-                modified_at = float("-inf")
-                time_text = ""
-
-            name_item = SortableTableWidgetItem(
-                name,
-                (name.casefold(), name),
-            )
-            name_item.setData(
-                Qt.ItemDataRole.UserRole,
-                str(path),
-            )
-            summary_item = SortableTableWidgetItem(
-                summary,
-                (summary.casefold(), summary),
-            )
-            time_item = SortableTableWidgetItem(
-                time_text,
-                modified_at,
-            )
-            self.browser_table.setItem(row, 0, name_item)
-            self.browser_table.setItem(row, 1, summary_item)
-            self.browser_table.setItem(row, 2, time_item)
-            name_item.setToolTip(f"{name}\n{path}")
-            self.browser_table.item(row, 1).setToolTip(summary)
-            self.browser_table.item(row, 2).setToolTip(
-                f"{time_text}\n{path}"
-            )
-
-        self._apply_browser_sort()
-
-    def _sort_browser(self, column):
-        order = Qt.SortOrder.AscendingOrder
-
-        if (
-            self.browser_sort_column == column
-            and self.browser_sort_order == Qt.SortOrder.AscendingOrder
-        ):
-            order = Qt.SortOrder.DescendingOrder
-
-        self.browser_sort_column = column
-        self.browser_sort_order = order
-        self._apply_browser_sort()
-
-    def _apply_browser_sort(self):
-        self.browser_table.sortItems(
-            self.browser_sort_column,
-            self.browser_sort_order,
-        )
-        header = self.browser_table.horizontalHeader()
-        header.setSortIndicator(
-            self.browser_sort_column,
-            self.browser_sort_order,
-        )
-        header.setSortIndicatorShown(True)
-
-    @staticmethod
-    def _browser_sort_key(path):
-        if path.is_dir():
-            return (0, path.name.lower())
-
-        if path.name.lower() == "video_info.json":
-            return (1, path.name.lower())
-
-        return (2, path.name.lower())
-
-    def _activate_row(self, row):
-        if row < 0 or row >= self.browser_table.rowCount():
-            return
-
-        item = self.browser_table.item(row, 0)
-        path_text = item.data(Qt.ItemDataRole.UserRole) if item else None
-
-        if not path_text:
-            return
-
-        path = Path(path_text)
-
-        if path.is_dir():
-            self._navigate_to(path)
-            return
-
-        if path.suffix.lower() in BROWSABLE_SUFFIXES:
-            DataPreviewDialog(
-                path,
-                self,
-                display_name=friendly_file_name(path),
-            ).exec()
-            return
-
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-
-    def _view_selected(self):
-        self._activate_row(self.browser_table.currentRow())
-
-    def _go_parent(self):
-        if self.current_dir == self.root_dir:
-            return
-
-        self._navigate_to(self.current_dir.parent)
-
-    def _toggle_tree(self):
-        if self.stack.currentWidget() is self.tree_page:
-            self.stack.setCurrentWidget(self.browser_page)
-            self.toggle_tree_button.setText("全部目录")
-            return
-
-        self._populate_directory_tree()
-        self.stack.setCurrentWidget(self.tree_page)
-        self.toggle_tree_button.setText("返回目录")
-
-    def _populate_directory_tree(self):
-        self.directory_tree.clear()
-
-        if not self.output_dir.exists():
-            return
-
-        root_item = QTreeWidgetItem(["output", "0"])
-        root_item.setData(0, Qt.ItemDataRole.UserRole, str(self.output_dir))
-        self.directory_tree.addTopLevelItem(root_item)
-        root_count = self._add_tree_children(root_item, self.output_dir)
-        root_item.setText(1, str(root_count))
-        root_item.setExpanded(True)
-
-    def _add_tree_children(self, parent_item, directory):
-        total_files = 0
-
-        for path in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
-            if (
-                path.is_file()
-                and path.suffix.lower() in BROWSABLE_SUFFIXES
-                and not is_subtitle_json(path)
-            ):
-                total_files += 1
-                continue
-
-            if not path.is_dir() or path.name == "__pycache__":
-                continue
-
-            item = QTreeWidgetItem([path.name, "0"])
-            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
-            parent_item.addChild(item)
-            child_files = self._add_tree_children(item, path)
-            item.setText(1, str(child_files))
-            total_files += child_files
-
-        return total_files
-
-    def _open_tree_directory(self, item):
-        path_text = item.data(0, Qt.ItemDataRole.UserRole)
-
-        if path_text:
-            self._navigate_to(Path(path_text))
-
-    def _directory_summary(self, path):
-        child_dirs = 0
-        direct_files = 0
-
-        try:
-            for child in path.iterdir():
-                if child.is_dir():
-                    child_dirs += 1
-                elif (
-                    child.suffix.lower() in BROWSABLE_SUFFIXES
-                    and not is_subtitle_json(child)
-                ):
-                    direct_files += 1
-        except OSError:
-            return "无法读取"
-
-        if child_dirs:
-            return f"{child_dirs} 个子目录 · {direct_files} 个数据文件"
-
-        return f"{direct_files} 个数据文件"
-
-    def _file_summary(self, path):
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-
-        if size >= 1024 * 1024:
-            size_text = f"{size / (1024 * 1024):.1f} MB"
-        else:
-            size_text = f"{size / 1024:.1f} KB"
-
-        return f"{path.suffix.removeprefix('.').upper()} · {size_text}"
-
-    def _friendly_time(self, timestamp):
-        value = datetime.fromtimestamp(timestamp)
-        now = datetime.now()
-
-        if value.date() == now.date():
-            return f"今天 {value.strftime('%H:%M')}"
-
-        return value.strftime("%m-%d %H:%M")

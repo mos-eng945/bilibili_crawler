@@ -1,11 +1,16 @@
 """Bilibili 关键词视频搜索。"""
 
+from pathlib import Path
+
 from bilibili_api import (
     search_videos,
 )
+from config import SEARCH_OUTPUT_DIR
 from crawler_common import (
     SEARCH_COLUMNS,
+    SEARCH_DEFAULT_PAGE_SIZE,
     SEARCH_DEFAULT_WORKERS,
+    SEARCH_MAX_PAGE_SIZE,
     SEARCH_MAX_WORKERS,
     build_video_row,
     clean_html_text,
@@ -15,9 +20,19 @@ from crawler_common import (
     parse_duration_seconds,
     request_with_retry,
     run_concurrently,
+    safe_filename,
+    timestamped_path,
     write_csv,
 )
-from output_paths import get_search_dir, timestamped_path
+
+# 搜索接口不返回分享数，写文件时去掉这一列，避免整列 0 被当成真实数据
+OUTPUT_COLUMNS = [column for column in SEARCH_COLUMNS if column != "share_count"]
+
+
+def get_search_dir(keyword, root=None):
+    """生成关键词搜索目录：`search/{关键词}/`。"""
+    root = root or SEARCH_OUTPUT_DIR
+    return Path(root) / (safe_filename(keyword) or "search")
 
 
 def parse_search_video(item):
@@ -35,7 +50,7 @@ def parse_search_video(item):
     like = item.get("like", 0)
     comment_count = item.get("review", 0)
     favorite_count = item.get("favorites", 0)
-    share_count = 0
+    share_count = 0  # 搜索接口没有分享数，该列不会写入（见 OUTPUT_COLUMNS）
     play_count = item.get("play", 0)
     danmaku_count = item.get("video_review", 0)
 
@@ -139,7 +154,7 @@ class SearchCrawler:
         output_root=None,
         page=1,
         pages=1,
-        page_size=20,
+        page_size=SEARCH_DEFAULT_PAGE_SIZE,
         workers=SEARCH_DEFAULT_WORKERS,
     ):
         self.session = session
@@ -147,7 +162,10 @@ class SearchCrawler:
         self.output_root = output_root
         self.page = max(1, int(page))
         self.pages = max(1, int(pages))
-        self.page_size = min(max(1, int(page_size)), 50)
+        self.page_size = min(
+            max(1, int(page_size)),
+            SEARCH_MAX_PAGE_SIZE,
+        )
         self.workers = min(
             max(1, int(workers)),
             SEARCH_MAX_WORKERS,
@@ -178,7 +196,7 @@ class SearchCrawler:
 
         end_page = self.page + self.pages - 1
         output_path = timestamped_path(output_dir, "search", len(rows))
-        write_csv(output_path, SEARCH_COLUMNS, rows)
+        write_csv(output_path, OUTPUT_COLUMNS, rows)
 
         print(
             f"搜索“{self.keyword}”第 {self.page}-{end_page} 页完成："

@@ -1,12 +1,10 @@
 """Qt application theme."""
 
-from pathlib import Path
-
 from PySide6.QtGui import QColor, QIcon, QPalette
 
+from config import ASSETS_DIR
 
-_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
-_STYLE_PATH = _ASSET_DIR / "app.qss"
+_STYLE_PATH = ASSETS_DIR / "app.qss"
 
 
 def _load_style():
@@ -16,19 +14,19 @@ def _load_style():
     return (
         style.replace(
             "__SPIN_UP_ARROW__",
-            (_ASSET_DIR / "chevron-up.svg").as_posix(),
+            (ASSETS_DIR / "chevron-up.svg").as_posix(),
         )
         .replace(
             "__SPIN_DOWN_ARROW__",
-            (_ASSET_DIR / "chevron-down.svg").as_posix(),
+            (ASSETS_DIR / "chevron-down.svg").as_posix(),
         )
         .replace(
             "__COMBO_DOWN_ARROW__",
-            (_ASSET_DIR / "chevron-down.svg").as_posix(),
+            (ASSETS_DIR / "chevron-down.svg").as_posix(),
         )
         .replace(
             "__CHECK_MARK__",
-            (_ASSET_DIR / "check.svg").as_posix(),
+            (ASSETS_DIR / "check.svg").as_posix(),
         )
     )
 
@@ -62,4 +60,4 @@ def apply_palette(app):
 
 def icon(name):
     """加载 assets 下的图标，取代 Qt 自带那套标准图标。"""
-    return QIcon(str(_ASSET_DIR / name))
+    return QIcon(str(ASSETS_DIR / name))

@@ -1,10 +1,12 @@
 """Bilibili UP 主全部公开视频采集。"""
 
 import math
+from pathlib import Path
 
 from bilibili_api import (
     get_user_videos,
 )
+from config import UP_OUTPUT_DIR
 from crawler_common import (
     SEARCH_COLUMNS,
     SEARCH_DEFAULT_WORKERS,
@@ -17,12 +19,21 @@ from crawler_common import (
     parse_duration_seconds,
     request_with_retry,
     run_concurrently,
+    safe_filename,
+    timestamped_path,
     write_csv,
 )
-from output_paths import get_up_dir, timestamped_path
 
-USER_VIDEO_DEFAULT_PAGE_SIZE = 30
+USER_VIDEO_DEFAULT_PAGE_SIZE = 50
 USER_VIDEO_MAX_PAGE_SIZE = 50
+
+
+def get_up_dir(mid, name="", root=None):
+    """生成 UP 主视频目录：`up/{MID}+{名字}/`。"""
+    root = root or UP_OUTPUT_DIR
+    name = str(name or "").strip()
+    folder = f"{mid}+{safe_filename(name)}" if name else str(mid)
+    return Path(root) / folder
 
 
 def parse_user_video(

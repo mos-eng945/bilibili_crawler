@@ -3,13 +3,20 @@
 from bilibili_api import (
     get_hot_search,
 )
+from config import HOT_OUTPUT_DIR
 from crawler_common import (
+    SEARCH_DEFAULT_PAGE_SIZE,
     SEARCH_DEFAULT_WORKERS,
     request_with_retry,
+    run_timestamp,
     write_csv,
 )
 from crawler_search import SearchCrawler
-from output_paths import get_hot_run_dir, run_timestamp
+
+
+def get_hot_run_dir(run_time):
+    """生成某次热搜运行的目录：`hot/{运行时间}/`。"""
+    return HOT_OUTPUT_DIR / run_time
 
 
 HOT_LIST_COLUMNS = [
@@ -31,7 +38,7 @@ class HotSearchCrawler:
         limit=10,
         page=1,
         pages=1,
-        page_size=20,
+        page_size=SEARCH_DEFAULT_PAGE_SIZE,
         workers=SEARCH_DEFAULT_WORKERS,
     ):
         self.session = session
@@ -47,9 +54,6 @@ class HotSearchCrawler:
             self.session.cookie,
             self.limit,
         )
-
-        if not isinstance(hot_items, list):
-            hot_items = []
 
         output_dir = get_hot_run_dir(run_timestamp())
         output_dir.mkdir(parents=True, exist_ok=True)

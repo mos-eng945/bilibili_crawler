@@ -42,7 +42,6 @@ py-modules = [
     "dm_pb2",
     "login",
     "main",
-    "output_paths",
     "qt_app",
     "session",
 ]

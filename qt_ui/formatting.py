@@ -1,7 +1,6 @@
 """Data labels and display formatting."""
 
 import re
-from datetime import datetime
 from pathlib import Path
 
 COLUMN_LABELS = {
@@ -40,17 +39,25 @@ COLUMN_LABELS = {
     "rpid": "评论编号",
     "user_name": "用户",
     "user_level": "等级",
+    "sex": "性别",
+    "vip": "大会员",
     "message": "评论内容",
-    "ctime": "评论时间",
+    "ctime_text": "评论时间",
     "reply_count": "回复数",
     "state": "评论状态",
     "ip_location": "IP属地",
     "image_urls": "图片地址",
     "时间(ms)": "出现时间",
+    "出现时间": "出现时间",
     "内容": "弹幕内容",
     "颜色": "颜色",
     "模式": "模式",
     "用户Hash": "用户标识",
+    "弹幕id": "弹幕编号",
+    "权重": "权重",
+    "哈希": "用户标识",
+    "发送时间": "发送时间",
+    "弹幕池": "弹幕池",
     "序号": "序号",
     "开始": "开始时间",
     "结束": "结束时间",
@@ -74,7 +81,9 @@ NUMBER_COLUMNS = {
     "danmaku",
     "up_follower_count",
     "user_level",
+    "vip",
     "reply_count",
+    "权重",
 }
 
 KEY_COLUMN_ORDER = {
@@ -100,10 +109,12 @@ KEY_COLUMN_ORDER = {
     "comments": (
         "user_name",
         "message",
-        "ctime",
+        "ctime_text",
         "like",
         "reply_count",
         "user_level",
+        "sex",
+        "vip",
         "state",
         "ip_location",
         "rpid",
@@ -119,11 +130,13 @@ KEY_COLUMN_ORDER = {
         "error",
     ),
     "danmaku": (
+        "弹幕id",
+        "出现时间",
+        "权重",
         "内容",
-        "时间(ms)",
-        "颜色",
-        "模式",
-        "用户Hash",
+        "哈希",
+        "发送时间",
+        "弹幕池",
     ),
     "video_info": (
         "title",
@@ -172,14 +185,6 @@ def format_preview_value(column, value):
 
     if column in NUMBER_COLUMNS:
         return format_number(value)
-
-    if column == "ctime":
-        try:
-            return datetime.fromtimestamp(int(value)).strftime(
-                "%Y-%m-%d %H:%M"
-            )
-        except (TypeError, ValueError, OSError):
-            return str(value)
 
     if column == "published_at":
         text = str(value).replace("T", " ")
@@ -237,6 +242,11 @@ def format_preview_value(column, value):
 
 def friendly_video_name(folder_name):
     """把 output 里的视频目录名整理成易读名称。"""
+    first, separator, rest = folder_name.partition("_")
+
+    if separator and first.startswith("BV"):
+        return f"{rest} · {first}"
+
     parts = folder_name.rsplit("_", 1)
 
     if len(parts) != 2 or not parts[1].startswith("BV"):
@@ -263,8 +273,19 @@ def friendly_file_name(path):
         return "评论"
 
     if filename.startswith("danmaku_"):
-        match = re.search(r"_p(\d+)\.csv$", filename)
-        return f"弹幕 P{match.group(1)}" if match else "弹幕"
+        stem = path.stem
+        match = re.search(r"_p(\d+)$", stem)
+
+        if match:
+            part = stem[len("danmaku_"):match.start()]
+            number = match.group(1)
+            return (
+                f"弹幕 · {part} (P{number})"
+                if part
+                else f"弹幕 P{number}"
+            )
+
+        return f"弹幕 · {stem[len('danmaku_'):]}"
 
     if filename.startswith("subtitle_"):
         match = re.search(r"_p(\d+)_(.+)\.(json|srt)$", filename)

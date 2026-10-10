@@ -64,18 +64,17 @@ def load_state():
 
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
-            print("成功读取登录状态文件:", STATE_FILE)
-            return json.load(f)
-    except OSError, json.JSONDecodeError:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
         print("登录状态文件已损坏，需要重新登录")
         return None
 
+    print("成功读取登录状态文件:", STATE_FILE)
+    return state
 
-def get_cookie_header(state=None):
-    """读取登录状态并生成请求 Cookie，也可以直接传入 state。"""
-    if state is None:
-        state = load_state()
 
+def get_cookie_header(state):
+    """把登录状态里的 cookies 拼成 HTTP 请求头需要的 Cookie 头。"""
     if not state:
         raise RuntimeError("没有可用的登录状态，请先运行 login.py")
 
@@ -88,11 +87,9 @@ def get_cookie_header(state=None):
 # =========================
 # 2. 检查本地 cookie
 # =========================
-def has_cookie():
+def has_cookie(state):
     """检查本地是否有未过期的 SESSDATA 登录 cookie"""
-    state = load_state()
-
-    if state is None:
+    if not state:
         return False
 
     for cookie in state.get("cookies", []):
@@ -114,12 +111,9 @@ def has_cookie():
 # =========================
 # 3. 联网验证 cookie
 # =========================
-def check_login_online(state=None):
+def check_login_online(state):
     """请求 nav 接口，确认 cookie 在服务端仍然有效"""
-    if state is None:
-        state = load_state()
-
-    if state is None:
+    if not state:
         return False
 
     cookie_header = get_cookie_header(state)
@@ -136,7 +130,7 @@ def check_login_online(state=None):
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.load(response)
             print("登录状态验证结果验证成功")
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         # 网络异常时不强制重新登录，交给后面的流程自己判断
         print("无法验证登录状态（网络问题），先按已登录处理")
         return True
@@ -181,17 +175,20 @@ def login():
 # 5. 统一入口
 # =========================
 def ensure_login():
-    """有可用 cookie 就跳过登录，否则弹出浏览器手动登录"""
-    if not has_cookie():
-        login()
-        return
+    """有可用 cookie 就跳过登录，否则弹出浏览器手动登录；返回最终 state。"""
+    state = load_state()
 
-    if check_login_online():
+    if not has_cookie(state):
+        login()
+        return load_state()
+
+    if check_login_online(state):
         print("检测到有效登录状态，跳过登录")
-        return
+        return state
 
     print("cookie 已失效，重新登录")
     login()
+    return load_state()
 
 
 # 统一命令行入口：bilibili -l
@@ -201,7 +198,7 @@ if __name__ == "__main__":
     # login()
     # check_login_online()
     # has_cookie()
-    # get_cookie_header(load_state())
+    get_cookie_header(load_state())
 
     # with sync_playwright() as p:
     #     browser = launch_browser(p)

@@ -5,7 +5,7 @@ import sys
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from config import BASE_DIR
+from config import ASSETS_DIR
 from qt_ui.main_window import MainWindow
 from qt_ui.theme import apply_palette
 
@@ -15,7 +15,7 @@ def main():
     app.setApplicationName("Bilibili 数据采集器")
     app.setStyle("Fusion")
     apply_palette(app)
-    app.setWindowIcon(QIcon(str(BASE_DIR / "assets" / "app-icon.svg")))
+    app.setWindowIcon(QIcon(str(ASSETS_DIR / "app-icon.svg")))
 
     window = MainWindow()
     window.show()
