@@ -1,16 +1,20 @@
 """项目级默认配置和通用参数解析。"""
 
 import argparse
+import os
 from pathlib import Path
 
-# 项目根目录；资源、输出、登录状态都相对它定位
+# 代码安装目录；资源文件随包分发，固定相对它定位
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
 # 采集任务的命令行入口，GUI 和命令行都指向同一个文件
 ENTRY_SCRIPT = BASE_DIR / "main.py"
 DEFAULT_BVID = "BV1UT42167xb"
+# 登录状态和采集结果的存放目录；可用 BILIBILI_DATA_DIR 覆盖
+DATA_DIR = Path(os.environ.get("BILIBILI_DATA_DIR") or BASE_DIR)
+STATE_FILE = DATA_DIR / "bilibili_state.json"
 # 采集结果统一落在 output/ 下，按类别分四个平级目录
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = DATA_DIR / "output"
 VIDEO_OUTPUT_DIR = OUTPUT_DIR / "video"
 SEARCH_OUTPUT_DIR = OUTPUT_DIR / "search"
 UP_OUTPUT_DIR = OUTPUT_DIR / "up"

@@ -16,10 +16,7 @@ import urllib.request
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from config import BASE_DIR
-
-# 登录状态保存的文件名
-STATE_FILE = BASE_DIR / "bilibili_state.json"
+from config import STATE_FILE
 
 BROWSER_CHANNELS = (
     ("chrome", "Google Chrome"),

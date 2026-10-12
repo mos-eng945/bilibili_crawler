@@ -24,7 +24,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `config.py` | 项目根目录、默认 BVID、输出目录常量和通用参数解析 |
+| `config.py` | 代码目录、数据目录、默认 BVID、输出目录常量和通用参数解析 |
 | `session.py` | 采集会话：缓存 cookie、WBI 密钥、视频信息和输出目录 |
 | `main.py` | `bilibili` 命令行入口和功能分发 |
 | `login.py` | 保存登录状态，并按 Chrome、Edge、Playwright Chromium 顺序启动浏览器 |
@@ -59,11 +59,30 @@
 
 ## 安装
 
+建议装进独立环境(虚拟环境或 conda 环境)，普通安装会把代码复制到环境的
+`site-packages`：
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install .
 ```
+
+需要图形界面或重新编译 `dm.proto` 时，按需加上可选依赖：
+
+```powershell
+pip install ".[gui]"       # Qt 图形界面
+pip install ".[dev]"       # grpcio-tools，重新编译 dm.proto 时才需要
+pip install ".[dev,gui]"   # 两者都要
+```
+
+开发时如果希望改完源码立刻生效，改用就地安装：
+
+```powershell
+pip install -e ".[dev,gui]"
+```
+
+两种装法都会带上 `assets/` 和 `qt_ui/dialogs/`，图形界面资源与弹窗模块不会缺失。
 
 如果没有 Chrome 或 Edge，可以安装 Playwright 自带 Chromium：
 
@@ -71,20 +90,7 @@ pip install -e .
 python -m playwright install chromium
 ```
 
-依赖统一声明在 `pyproject.toml`。需要重新编译 `dm.proto` 时，
-再安装开发依赖：
-
-```powershell
-pip install -e ".[dev]"
-```
-
-安装 Qt 图形界面依赖：
-
-```powershell
-pip install -e ".[gui]"
-```
-
-启动图形界面：
+依赖统一声明在 `pyproject.toml`。启动图形界面：
 
 ```powershell
 bilibili-gui
@@ -204,7 +210,8 @@ bilibili -i
 `max offset exceeded` 页码上限影响。
 
 首次运行或登录状态失效时，程序会打开可用浏览器，要求手动登录。
-登录完成后，Cookie 和 localStorage 会保存到 `bilibili_state.json`。
+登录完成后，Cookie 和 localStorage 会保存到数据目录下的 `bilibili_state.json`
+（见“数据目录”）。
 
 `-a` 会依次执行：
 
@@ -220,6 +227,31 @@ bilibili -i
 - 视频没有字幕时不会生成字幕文件。
 - 部分高清晰度或字幕接口需要有效登录状态。
 - 弹幕采集直连分段接口，可能受网络和风控策略影响。
+
+## 数据目录
+
+登录状态 `bilibili_state.json` 和采集结果 `output/` 都放在同一个数据目录下，
+由 `config.py` 的 `DATA_DIR` 决定。
+
+默认位置是代码所在目录。就地安装（`pip install -e .`）时就是项目根目录；
+普通安装时代码位于环境的 `site-packages`，默认数据目录也会跟着落到那里。
+如果不想把登录状态和采集结果写进 `site-packages`，用环境变量
+`BILIBILI_DATA_DIR` 指定一个固定目录即可：
+
+```powershell
+$env:BILIBILI_DATA_DIR = "D:\bilibili-data"
+bilibili -i BV1V3Yn6wENr
+```
+
+conda 环境可以把它固化成环境变量，激活环境后自动生效（重开终端或
+`conda activate` 之后生效）：
+
+```powershell
+conda env config vars set BILIBILI_DATA_DIR="D:\bilibili-data"
+conda activate <环境名>
+```
+
+不设置时等同于代码所在目录，行为与旧版本一致。
 
 ## 输出目录
 
@@ -420,10 +452,10 @@ CSV 列如下：
 
 ## 登录状态
 
-登录状态默认保存在：
+登录状态保存在数据目录下（见“数据目录”）：
 
 ```text
-bilibili_state.json
+{数据目录}/bilibili_state.json
 ```
 
 该文件包含可访问账号的 Cookie，属于敏感信息，不应提交到 Git 仓库或分享给他人。
