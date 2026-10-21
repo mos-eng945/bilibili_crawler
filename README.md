@@ -47,14 +47,14 @@
 | `qt_ui/theme.py` | 加载并注入 Qt 全局样式 |
 | `qt_ui/system_shell.py` | 打开目录、前置资源管理器窗口等系统互操作 |
 | `assets/` | 图形界面资源，含图标、图片和 `app.qss` 样式表 |
-| `web/` | Vue 3 + Vite Web 前端，当前登录状态仅在前端模拟 |
+| `crawler_web/` | Vue 3 + Vite Web 前端，当前登录状态仅在前端模拟 |
 
 ## Web 前端
 
-Web 前端位于 `web/`，需要 Node.js 22.18+ 或 24.12+：
+Web 前端位于 `crawler_web/`，需要 Node.js 22.18+ 或 24.12+：
 
 ```powershell
-cd web
+cd crawler_web
 npm ci
 npm run dev
 ```
