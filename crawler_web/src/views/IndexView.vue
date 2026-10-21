@@ -4,14 +4,14 @@ import {
   BookOpen,
   ChartNoAxesCombined,
   ChartSpline,
-  ChevronDown,
   Download,
   FileText,
   Search,
   Settings,
   Upload,
-  UserRound,
 } from '@lucide/vue'
+
+import AccountMenu from '@/components/AccountMenu.vue'
 
 const SIDEBAR_WIDTH_KEY = 'crawler-web-sidebar-width'
 const ICON_MIN_WIDTH = 72
@@ -34,14 +34,13 @@ function readSidebarWidth() {
 
   const storedWidth = Number(storedValue)
   if (!Number.isFinite(storedWidth)) return DEFAULT_SIDEBAR_WIDTH
-  if (storedWidth <= 0) return 0
-  if (storedWidth < ICON_MIN_WIDTH) return 0
+  if (storedWidth < ICON_MIN_WIDTH) return ICON_MIN_WIDTH
   if (storedWidth > MAX_SIDEBAR_WIDTH) return MAX_SIDEBAR_WIDTH
   return storedWidth
 }
 
 function clampSidebarWidth(value) {
-  if (value < ICON_MIN_WIDTH) return 0
+  if (value < ICON_MIN_WIDTH) return ICON_MIN_WIDTH
   if (value > MAX_SIDEBAR_WIDTH) return MAX_SIDEBAR_WIDTH
   return value
 }
@@ -49,11 +48,7 @@ function clampSidebarWidth(value) {
 const sidebarWidth = ref(readSidebarWidth())
 const resizing = ref(false)
 
-const sidebarHidden = computed(() => sidebarWidth.value === 0)
-const sidebarIconOnly = computed(() => {
-  if (sidebarWidth.value === 0) return false
-  return sidebarWidth.value < LABEL_HIDE_WIDTH
-})
+const sidebarIconOnly = computed(() => sidebarWidth.value < LABEL_HIDE_WIDTH)
 
 function startSidebarResize(event) {
   event.preventDefault()
@@ -104,16 +99,12 @@ function handleSidebarResizeKeydown(event) {
         </div>
       </RouterLink>
 
-      <RouterLink class="account" active-class="is-active" to="/user">
-        <UserRound :size="16" aria-hidden="true" />
-        <span>账号</span>
-        <ChevronDown :size="14" aria-hidden="true" />
-      </RouterLink>
+      <AccountMenu />
     </header>
 
     <div
       class="layout"
-      :class="{ 'is-hidden': sidebarHidden, 'is-icon-only': sidebarIconOnly }"
+      :class="{ 'is-icon-only': sidebarIconOnly }"
       :style="{ '--sidebar-width': sidebarWidth + 'px' }"
     >
       <aside class="sidebar">
@@ -137,7 +128,7 @@ function handleSidebarResizeKeydown(event) {
           role="separator"
           aria-label="调整侧栏宽度"
           aria-orientation="vertical"
-          aria-valuemin="0"
+          :aria-valuemin="ICON_MIN_WIDTH"
           :aria-valuemax="MAX_SIDEBAR_WIDTH"
           :aria-valuenow="sidebarWidth"
           tabindex="0"
@@ -232,33 +223,6 @@ function handleSidebarResizeKeydown(event) {
   line-height: 1.3;
 }
 
-.account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 13px;
-  color: var(--index-muted);
-  text-decoration: none;
-  background: var(--index-surface);
-  border: 1px solid var(--index-border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
-}
-
-.account:hover {
-  color: var(--index-text);
-  background: var(--index-surface-hover);
-  border-color: var(--index-border-strong);
-}
-
-.account.is-active {
-  color: var(--index-text);
-  background: var(--index-accent-soft);
-  border-color: var(--index-accent-soft);
-}
-
 .layout {
   display: grid;
   grid-template-columns: var(--sidebar-width, 232px) minmax(0, 1fr);
@@ -287,20 +251,6 @@ function handleSidebarResizeKeydown(event) {
   background: var(--index-panel);
   border-right: 1px solid var(--index-border);
   transition: opacity 0.16s ease, padding 0.2s ease, border-color 0.2s ease;
-}
-
-.layout.is-hidden .sidebar {
-  padding: 0;
-}
-
-.layout.is-hidden .nav {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.layout.is-hidden .sidebar-resizer {
-  right: -8px;
 }
 
 .layout.is-icon-only .sidebar {
@@ -534,17 +484,6 @@ function handleSidebarResizeKeydown(event) {
 }
 
 @media (max-width: 480px) {
-  .account {
-    width: 36px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .account span,
-  .account svg:last-child {
-    display: none;
-  }
-
   .content {
     padding-top: 28px;
   }

@@ -69,4 +69,4 @@ router.beforeEach((to) => {
   return true
 })
 
-export default router
+export default router//导出路由
