@@ -1,0 +1,12 @@
+# 推荐排序配置
+# 权重可在前端或接口请求中由用户按需覆盖。
+
+similarity:
+  method: tfidf
+
+weights:
+  semantic_similarity: 0.3
+  popularity: 0.1
+  sentiment: 0.3
+  comment_quality: 0.3
+

@@ -1,0 +1,10 @@
+# Test/example script, keep it local only.
+analysis_example.py
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local secrets
+.env
+

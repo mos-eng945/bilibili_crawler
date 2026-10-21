@@ -1,0 +1,297 @@
+# 学习方向分类配置
+# 后续后端根据用户输入做关键词规则匹配和向量相似度分类。
+
+thresholds:
+  high_confidence_diff: 0.25   # 第一名与第二名分差大于该值视为高置信
+  low_confidence_score: 0.30   # 最高分低于该值视为低置信
+
+categories:
+  - id: programming
+    name: 编程开发
+    description: 编程语言、软件开发、算法数据结构、爬虫、前后端开发等课程
+    keywords:
+      - Python
+      - Java
+      - JavaScript
+      - 前端
+      - 后端
+      - 爬虫
+      - 算法
+      - 数据结构
+      - 数据库
+      - C语言
+      - C++
+      - 编程
+      - 代码
+      - 开发
+      - 框架
+    bilibili_partitions:
+      - 科技区
+      - 计算机技术
+      - 编程
+
+  - id: ai_data
+    name: 人工智能与数据
+    description: 机器学习、深度学习、数据分析、自然语言处理等课程
+    keywords:
+      - 机器学习
+      - 深度学习
+      - 神经网络
+      - 数据分析
+      - NLP
+      - 自然语言处理
+      - 计算机视觉
+      - 数据挖掘
+      - 人工智能
+      - 模型
+      - 训练
+    bilibili_partitions:
+      - 科技区
+      - 计算机技术
+      - 数据科学
+
+  - id: kaoyan_math
+    name: 考研数学
+    description: 高等数学、线性代数、概率论等考研数学课程
+    keywords:
+      - 高数
+      - 高等数学
+      - 线性代数
+      - 概率论
+      - 数一
+      - 数二
+      - 数三
+      - 考研数学
+      - 微积分
+      - 导数
+      - 积分
+      - 极限
+    bilibili_partitions:
+      - 校园学习
+      - 考研
+
+  - id: kaoyan_english
+    name: 考研英语
+    description: 考研英语词汇、阅读、作文、翻译等课程
+    keywords:
+      - 考研英语
+      - 阅读理解
+      - 作文
+      - 完形填空
+      - 翻译
+      - 词汇
+      - 真题
+      - 英语一
+      - 英语二
+    bilibili_partitions:
+      - 校园学习
+      - 考研
+      - 英语
+
+  - id: english
+    name: 英语学习
+    description: 四六级、雅思、托福、口语、语法等英语学习内容
+    keywords:
+      - 四六级
+      - 四级
+      - 六级
+      - 雅思
+      - 托福
+      - 口语
+      - 背单词
+      - 语法
+      - 听力
+      - 英语学习
+      - 单词
+    bilibili_partitions:
+      - 校园学习
+      - 英语
+      - 语言学习
+
+  - id: office
+    name: 办公技能
+    description: Excel、Word、PPT 等办公软件和数据处理技能
+    keywords:
+      - Excel
+      - Word
+      - PPT
+      - WPS
+      - 办公
+      - 表格
+      - 数据处理
+      - 文档
+      - 幻灯片
+    bilibili_partitions:
+      - 科技区
+      - 软件应用
+      - 职场
+
+  - id: career
+    name: 职场求职
+    description: 简历、面试、实习、职业规划等求职相关内容
+    keywords:
+      - 简历
+      - 面试
+      - 实习
+      - 职业规划
+      - 求职
+      - 职场
+      - 跳槽
+      - 校招
+      - 秋招
+      - 春招
+    bilibili_partitions:
+      - 职场
+      - 校园学习
+
+  - id: cooking
+    name: 美食烹饪
+    description: 家常菜、烘焙、甜点、饮品等美食制作教学
+    keywords:
+      - 美食
+      - 做饭
+      - 家常菜
+      - 烘焙
+      - 甜品
+      - 蛋糕
+      - 咖啡
+      - 烹饪
+      - 食谱
+      - 食材
+    bilibili_partitions:
+      - 生活区
+      - 美食
+
+  - id: sports
+    name: 体育运动
+    description: 健身、跑步、球类运动、瑜伽等运动教学
+    keywords:
+      - 健身
+      - 跑步
+      - 篮球
+      - 羽毛球
+      - 瑜伽
+      - 游泳
+      - 足球
+      - 增肌
+      - 减脂
+      - 运动
+    bilibili_partitions:
+      - 运动
+      - 生活区
+
+  - id: music
+    name: 音乐学习
+    description: 吉他、钢琴、声乐、乐理、编曲等音乐教学
+    keywords:
+      - 吉他
+      - 钢琴
+      - 声乐
+      - 乐理
+      - 编曲
+      - 唱歌
+      - 弹唱
+      - 乐器
+      - 五线谱
+    bilibili_partitions:
+      - 音乐
+      - 演奏
+
+  - id: painting
+    name: 绘画美术
+    description: 素描、水彩、油画、板绘等绘画教学
+    keywords:
+      - 素描
+      - 水彩
+      - 油画
+      - 板绘
+      - 绘画
+      - 手绘
+      - 简笔画
+      - 上色
+      - 人体
+    bilibili_partitions:
+      - 绘画
+      - 生活区
+
+  - id: photography
+    name: 摄影影视
+    description: 摄影、摄像、剪辑、调色、短视频创作等内容
+    keywords:
+      - 摄影
+      - 摄像
+      - 剪辑
+      - 调色
+      - 短视频
+      - 相机
+      - 拍摄
+      - 运镜
+      - 后期
+    bilibili_partitions:
+      - 影视
+      - 科技区
+      - 数码
+
+  - id: design
+    name: 设计创作
+    description: 平面设计、UI、海报、Logo 等设计教学
+    keywords:
+      - 平面设计
+      - UI
+      - 海报
+      - Logo
+      - 设计
+      - Photoshop
+      - PS
+      - Illustrator
+      - 排版
+      - 配色
+    bilibili_partitions:
+      - 设计
+      - 科技区
+      - 软件应用
+
+  - id: exam_cert
+    name: 升学考证
+    description: 高考、专升本、考公、法考、教师资格等考试内容
+    keywords:
+      - 高考
+      - 专升本
+      - 考公
+      - 公务员
+      - 行测
+      - 申论
+      - 法考
+      - 教资
+      - 教师资格
+      - 考证
+    bilibili_partitions:
+      - 校园学习
+      - 考研
+      - 考试
+
+  - id: humanities
+    name: 人文通识
+    description: 历史、哲学、法律、心理学、经济学等人文通识内容
+    keywords:
+      - 历史
+      - 哲学
+      - 法律
+      - 心理学
+      - 社会学
+      - 经济
+      - 金融
+      - 文学
+      - 政治
+      - 文化
+    bilibili_partitions:
+      - 人文
+      - 科学
+      - 财经
+
+  - id: other
+    name: 其他学习
+    description: 暂未明确归类的学习内容
+    keywords: []
+    bilibili_partitions: []
+

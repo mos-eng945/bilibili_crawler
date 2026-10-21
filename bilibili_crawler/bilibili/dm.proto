@@ -1,0 +1,27 @@
+// Bilibili 弹幕接口的 Protobuf 数据结构。
+//
+// 整体思路：
+// 1. DanmakuElem 描述单条弹幕及其时间、样式、内容等字段。
+// 2. DmSegMobileReply 描述一个弹幕分段响应，其中包含多条弹幕。
+// 3. dm_pb2.py 根据本文件生成，用于运行时解码接口返回的二进制数据。
+
+syntax = "proto3";
+
+message DanmakuElem {
+    int64 id = 1;           // 弹幕 ID
+    int64 progress = 2;     // 出现时间，单位毫秒
+    int32 mode = 3;         // 显示模式，例如滚动、顶部、底部
+    int32 fontsize = 4;     // 字号大小
+    uint32 color = 5;       // 颜色，十进制 RGB
+    string midHash = 6;     // 发送用户的匿名 Hash
+    string content = 7;     // 弹幕文字内容
+    int64 ctime = 8;        // 发送时间，Unix 时间戳
+    int32 weight = 9;       // 弹幕权重
+    string action = 10;     // 附加行为或动作信息
+    int32 pool = 11;        // 弹幕池编号
+    string idStr = 12;      // 弹幕 ID 的字符串形式
+}
+
+message DmSegMobileReply {
+    repeated DanmakuElem elems = 1;
+}

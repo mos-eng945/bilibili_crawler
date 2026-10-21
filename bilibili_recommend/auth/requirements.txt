@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pymysql
+argon2-cffi
+PyJWT
+
