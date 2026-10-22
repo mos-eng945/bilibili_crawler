@@ -1,39 +1,40 @@
 import { ref } from 'vue'
 
-const AUTH_KEY = 'crawler-web-authenticated'
+const TOKEN_KEY = 'crawler-web-token'
 
-export const ACCOUNT_MAX_LENGTH = 32
-export const PASSWORD_MIN_LENGTH = 6
-export const PASSWORD_MAX_LENGTH = 32
+export const ACCOUNT_MAX_LENGTH = 20
+export const PASSWORD_MIN_LENGTH = 8
+export const PASSWORD_MAX_LENGTH = 64
 
-/** 读取认证状态返回T/F */
-function readAuthState()
-{
-  if (localStorage.getItem(AUTH_KEY) === '1') return true
-  if (sessionStorage.getItem(AUTH_KEY) === '1') return true
-  return false
+function readToken() {
+  return (
+    localStorage.getItem(TOKEN_KEY)
+    || sessionStorage.getItem(TOKEN_KEY)
+    || ''
+  )
 }
 
-export const authenticated = ref(readAuthState())
+export const token = ref(readToken())
+export const authenticated = ref(Boolean(token.value))
 
-/** 记住我,选了就存local为1,没选中就存session为1 */
-export function signIn(remember)
-{
+export function setSession(tokenValue, remember) {
+  token.value = tokenValue
   authenticated.value = true
 
   if (remember) {
-    localStorage.setItem(AUTH_KEY, '1')
-    sessionStorage.removeItem(AUTH_KEY)
+    localStorage.setItem(TOKEN_KEY, tokenValue)
+    sessionStorage.removeItem(TOKEN_KEY)
     return
   }
 
-  sessionStorage.setItem(AUTH_KEY, '1')
-  localStorage.removeItem(AUTH_KEY)
+  sessionStorage.setItem(TOKEN_KEY, tokenValue)
+  localStorage.removeItem(TOKEN_KEY)
 }
 
-/** 登出 */
 export function signOut() {
+  token.value = ''
   authenticated.value = false
-  localStorage.removeItem(AUTH_KEY)
-  sessionStorage.removeItem(AUTH_KEY)
+  localStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(TOKEN_KEY)
 }
+

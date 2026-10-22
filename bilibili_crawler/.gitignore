@@ -1,9 +1,0 @@
-# Workspace-only files
-.vscode/
-.pytest_cache/
-AGENTS.md
-
-# OS metadata
-.DS_Store
-Thumbs.db
-desktop.ini

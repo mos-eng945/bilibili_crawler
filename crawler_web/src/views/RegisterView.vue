@@ -7,8 +7,9 @@ import {
   ACCOUNT_MAX_LENGTH,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
-  signIn,
+  setSession,
 } from '@/auth'
+import { registerAccount } from '@/api'
 
 const router = useRouter()
 const account = ref('')
@@ -16,6 +17,8 @@ const password = ref('')
 const confirmation = ref('')
 const blurred = ref({ account: false, password: false, confirmation: false })
 const submitted = ref(false)
+const loading = ref(false)
+const apiError = ref('')
 
 const errors = computed(() => {
   const result = {
@@ -61,13 +64,27 @@ function errorFor(field) {
   return errors.value[field]
 }
 
-function handleSubmit() {
+async function handleSubmit() {
   submitted.value = true
 
   if (!isValid.value) return
 
-  signIn(true)
-  router.replace('/overview')
+  loading.value = true
+  apiError.value = ''
+
+  try {
+    const data = await registerAccount({
+      username: account.value.trim(),
+      password: password.value,
+      confirm_password: confirmation.value,
+    })
+    setSession(data.token, true)
+    router.replace('/overview')
+  } catch (err) {
+    apiError.value = err.message || '注册失败'
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -107,7 +124,7 @@ function handleSubmit() {
               name="password"
               type="password"
               autocomplete="new-password"
-              placeholder="至少 6 位"
+              placeholder="至少 8 位"
               :aria-invalid="Boolean(errorFor('password'))"
               @blur="blurred.password = true"
             />
@@ -135,9 +152,11 @@ function handleSubmit() {
           </p>
         </div>
 
-        <button class="submit" type="submit">
+        <p v-if="apiError" class="field__error">{{ apiError }}</p>
+
+        <button class="submit" type="submit" :disabled="loading">
           <UserPlus :size="16" aria-hidden="true" />
-          <span>注册并进入</span>
+          <span>{{ loading ? '注册中' : '注册并进入' }}</span>
         </button>
       </form>
 

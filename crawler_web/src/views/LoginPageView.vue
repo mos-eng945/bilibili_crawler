@@ -3,7 +3,8 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CircleAlert, Eye, EyeOff, LoaderCircle, LogIn, Lock, User } from '@lucide/vue'
 
-import { ACCOUNT_MAX_LENGTH, PASSWORD_MAX_LENGTH, signIn } from '@/auth'
+import { ACCOUNT_MAX_LENGTH, PASSWORD_MAX_LENGTH, setSession } from '@/auth'
+import { loginAccount } from '@/api'
 
 const loading = ref(false)
 const error = ref('')
@@ -87,23 +88,37 @@ function errorFor(field) {
 /**
  * 处理表单提交
  */
-function handleSubmit() {
+async function handleSubmit() {
   submitted.value = true
 
   if (!isValid.value || loading.value) return
 
   loading.value = true
   error.value = ''
-  signIn(remember.value)
-  loading.value = false
 
-  const redirect = route.query.redirect
-  if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
-    router.replace(redirect)
-    return
+  try {
+    const data = await loginAccount({
+      username: username.value.trim(),
+      password: password.value,
+    })
+    setSession(data.token, remember.value)
+
+    const redirect = route.query.redirect
+    if (
+      typeof redirect === 'string'
+      && redirect.startsWith('/')
+      && !redirect.startsWith('//')
+    ) {
+      router.replace(redirect)
+      return
+    }
+
+    router.replace('/project')
+  } catch (err) {
+    error.value = err.message || '登录失败'
+  } finally {
+    loading.value = false
   }
-
-  router.replace('/project')
 }
 </script>
 
