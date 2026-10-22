@@ -20,6 +20,12 @@ const submitted = ref(false)
 const loading = ref(false)
 const apiError = ref('')
 
+/**
+ * 前端注册校验：
+ * 1. 账号不能为空，长度不能超过 ACCOUNT_MAX_LENGTH
+ * 2. 密码长度不能小于 PASSWORD_MIN_LENGTH，且不能超过 PASSWORD_MAX_LENGTH
+ * 3. 确认密码不能为空，不能超过 PASSWORD_MAX_LENGTH，且必须与密码一致
+ */
 const errors = computed(() => {
   const result = {
     account: '',
@@ -51,7 +57,10 @@ const errors = computed(() => {
 
   return result
 })
-
+/**
+ * 计算注册表单是否有效
+ * 如果有任何一个字段有错误，则返回 false，否则返回 true
+ */
 const isValid = computed(() => {
   if (errors.value.account) return false
   if (errors.value.password) return false

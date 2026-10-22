@@ -45,7 +45,7 @@ const router = createRouter({
       name: 'register',
       component: RegisterView,
     },
-    { path: '/:pathMatch(.*)*', redirect: '/overview' },//匹配所有未定义的路由,重定向到/overview
+    { path: '/:pathMatch(.*)*', redirect: '/project' },//匹配所有未定义的路由,重定向到/project
   ],
   /** 滚动行为 切换时返回顶部 */
   scrollBehavior() {
@@ -61,9 +61,9 @@ router.beforeEach((to) => {
       query: { redirect: to.fullPath },//表示当前目标路由的完整 URL 路径，包含查询参数和哈希值,登录后可以跳转回原来的页面
     }
   }
-  /**如果已经认证,访问登陆和注册页面时重定向到概览页面 */
+  /**如果已经认证,访问登陆和注册页面时重定向到项目介绍页 */
   if ((to.name === 'login' || to.name === 'register') && authenticated.value) {
-    return { name: 'overview' }
+    return { name: 'project' }
   }
 
   return true

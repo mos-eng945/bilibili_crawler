@@ -13,11 +13,11 @@ import {
 
 import AccountMenu from '@/components/AccountMenu.vue'
 
-const SIDEBAR_WIDTH_KEY = 'crawler-web-sidebar-width'
-const ICON_MIN_WIDTH = 72
-const LABEL_HIDE_WIDTH = 180
-const MAX_SIDEBAR_WIDTH = 380
-const DEFAULT_SIDEBAR_WIDTH = 232
+const SIDEBAR_WIDTH_KEY = 'crawler-web-sidebar-width-compact'
+const ICON_MIN_WIDTH = 64
+const LABEL_HIDE_WIDTH = 176
+const MAX_SIDEBAR_WIDTH = 320
+const DEFAULT_SIDEBAR_WIDTH = 200
 
 const navigation = [
   { label: '项目介绍', to: '/project', icon: BookOpen },
@@ -123,6 +123,25 @@ function handleSidebarResizeKeydown(event) {
           </RouterLink>
         </nav>
 
+        <div class="data-actions" aria-label="数据操作">
+          <RouterLink
+            class="action-button action-button--primary"
+            to="/import"
+            title="导入数据"
+          >
+            <Upload :size="16" aria-hidden="true" />
+            <span>导入数据</span>
+          </RouterLink>
+          <RouterLink
+            class="action-button action-button--secondary"
+            to="/export"
+            title="导出结果"
+          >
+            <Download :size="16" aria-hidden="true" />
+            <span>导出结果</span>
+          </RouterLink>
+        </div>
+
         <div
           class="sidebar-resizer"
           role="separator"
@@ -140,17 +159,6 @@ function handleSidebarResizeKeydown(event) {
       <main class="content">
         <RouterView />
       </main>
-    </div>
-
-    <div class="data-actions" aria-label="数据操作">
-      <RouterLink class="action-button action-button--primary" to="/import">
-        <Upload :size="16" aria-hidden="true" />
-        <span>导入数据</span>
-      </RouterLink>
-      <RouterLink class="action-button action-button--secondary" to="/export">
-        <Download :size="16" aria-hidden="true" />
-        <span>导出结果</span>
-      </RouterLink>
     </div>
   </div>
 </template>
@@ -243,10 +251,12 @@ function handleSidebarResizeKeydown(event) {
   position: sticky;
   top: 64px;
   z-index: 10;
+  display: flex;
+  flex-direction: column;
   align-self: start;
   height: calc(100vh - 64px);
   min-width: 0;
-  padding: 22px 14px;
+  padding: 22px 12px;
   overflow: visible;
   background: var(--index-panel);
   border-right: 1px solid var(--index-border);
@@ -362,21 +372,15 @@ function handleSidebarResizeKeydown(event) {
   width: 100%;
   max-width: 1240px;
   min-width: 0;
-  padding: 58px 48px 128px;
+  padding: 58px 48px 64px;
 }
 
 .data-actions {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 30;
-  display: flex;
+  display: grid;
   gap: 8px;
-  padding: 8px;
-  background: var(--index-panel);
-  border: 1px solid var(--index-border);
-  border-radius: 10px;
-  box-shadow: 0 14px 36px rgba(27, 29, 34, 0.14);
+  margin-top: auto;
+  padding-top: 18px;
+  border-top: 1px solid var(--index-border);
 }
 
 .action-button {
@@ -416,9 +420,23 @@ function handleSidebarResizeKeydown(event) {
   border-color: var(--index-border-strong);
 }
 
+.layout.is-icon-only .data-actions {
+  justify-items: center;
+  padding-top: 14px;
+}
+
+.layout.is-icon-only .action-button {
+  width: 42px;
+  padding: 0;
+}
+
+.layout.is-icon-only .action-button span {
+  display: none;
+}
+
 @media (max-width: 1024px) {
   .content {
-    padding: 46px 34px 120px;
+    padding: 46px 34px 64px;
   }
 }
 
@@ -445,6 +463,8 @@ function handleSidebarResizeKeydown(event) {
     position: sticky;
     top: 58px;
     z-index: 15;
+    display: flex;
+    align-items: center;
     width: 100%;
     height: auto;
     padding: 8px;
@@ -455,6 +475,7 @@ function handleSidebarResizeKeydown(event) {
   }
 
   .nav {
+    flex: none;
     flex-direction: row;
     width: max-content;
   }
@@ -474,12 +495,28 @@ function handleSidebarResizeKeydown(event) {
   }
 
   .content {
-    padding: 34px 18px 112px;
+    padding: 34px 18px 64px;
   }
 
   .data-actions {
-    right: 16px;
-    bottom: 16px;
+    display: flex;
+    flex: none;
+    gap: 6px;
+    margin-top: 0;
+    margin-left: 8px;
+    padding-top: 0;
+    padding-left: 8px;
+    border-top: 0;
+    border-left: 1px solid var(--index-border);
+  }
+
+  .layout.is-icon-only .data-actions {
+    display: flex;
+  }
+
+  .layout.is-icon-only .action-button {
+    width: 40px;
+    padding: 0;
   }
 }
 
@@ -488,13 +525,7 @@ function handleSidebarResizeKeydown(event) {
     padding-top: 28px;
   }
 
-  .data-actions {
-    left: 16px;
-    right: 16px;
-  }
-
   .action-button {
-    flex: 1;
     padding: 0 12px;
   }
 }
