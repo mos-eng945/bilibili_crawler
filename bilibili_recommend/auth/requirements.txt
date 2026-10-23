@@ -3,4 +3,7 @@ uvicorn[standard]
 pymysql
 argon2-cffi
 PyJWT
+scikit-learn
+pyyaml
+jieba
 

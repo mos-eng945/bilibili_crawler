@@ -6,12 +6,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import database
+import recommend
 import security
 from config import DEFAULT_AVATAR
 from schemas import LoginRequest, ProfileUpdate, RegisterRequest, UserOut
 
 
 app = FastAPI(title="Bilibili Learning Auth")
+app.include_router(recommend.router)
 
 app.add_middleware(
     CORSMiddleware,

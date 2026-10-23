@@ -88,3 +88,18 @@ CREATE TABLE IF NOT EXISTS subtitles (
     KEY idx_bvid (bvid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS video_categories (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    bvid        VARCHAR(32) NOT NULL,
+    category_id VARCHAR(64) NOT NULL,
+    score       INT DEFAULT 0,
+    UNIQUE KEY uk_bvid_category (bvid, category_id),
+    KEY idx_category (category_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS video_texts (
+    bvid       VARCHAR(32) PRIMARY KEY,
+    video_text TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
