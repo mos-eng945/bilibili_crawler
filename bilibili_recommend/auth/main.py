@@ -2,8 +2,9 @@
 
 from datetime import datetime, timedelta
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import database
 import recommend
@@ -20,6 +21,7 @@ from schemas import (
 
 app = FastAPI(title="Bilibili Learning Auth")
 app.include_router(recommend.router)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,13 +41,13 @@ def get_db():
 
 
 def get_current_user(
-    authorization: str = Header(default=""),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     connection=Depends(get_db),
 ):
-    if not authorization.startswith("Bearer "):
+    if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail="未登录")
 
-    token = authorization.removeprefix("Bearer ")
+    token = credentials.credentials
     try:
         payload = security.decode_access_token(token)
     except Exception as exc:
@@ -285,7 +287,7 @@ def get_favorites(
 
 @app.delete("/api/user/favorites/{bvid}")
 def remove_favorite(
-    bvid: str,
+    bvid: str = Path(description="要取消收藏的视频 BV 号"),
     user=Depends(get_current_user),
     connection=Depends(get_db),
 ):

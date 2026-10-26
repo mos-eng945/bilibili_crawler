@@ -28,9 +28,15 @@ def validate_password(value):
 
 
 class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    confirm_password: str
+    username: str = Field(
+        description="用户名，3 到 20 位，以字母开头，只能包含字母、数字和下划线"
+    )
+    password: str = Field(
+        description="密码，8 到 64 位，必须同时包含字母和数字"
+    )
+    confirm_password: str = Field(
+        description="再次输入密码，需要与密码一致"
+    )
 
     @model_validator(mode="after")
     def check_rules(self):
@@ -42,16 +48,24 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(description="登录用户名")
+    password: str = Field(description="登录密码")
 
 
 class ProfileUpdate(BaseModel):
-    avatar: str = Field(min_length=1, max_length=512)
+    avatar: str = Field(
+        min_length=1,
+        max_length=512,
+        description="新的头像 URL 地址",
+    )
 
 
 class FavoriteRequest(BaseModel):
-    bvid: str = Field(min_length=1, max_length=32)
+    bvid: str = Field(
+        min_length=1,
+        max_length=32,
+        description="要收藏的视频 BV 号",
+    )
 
 
 class UserOut(BaseModel):

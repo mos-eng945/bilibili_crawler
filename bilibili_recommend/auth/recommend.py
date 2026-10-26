@@ -7,7 +7,8 @@ from pathlib import Path
 import pymysql
 import yaml
 import jieba
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path as ApiPath, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -17,22 +18,34 @@ import security
 
 
 router = APIRouter(prefix="/api", tags=["recommend"])
+optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 CATEGORIES_FILE = Path(__file__).resolve().parents[1] / "config" / "categories.yaml"
 
 
 class Weights(BaseModel):
-    semantic_similarity: float = Field(0.3, ge=0, le=1)
-    popularity: float = Field(0.1, ge=0, le=1)
-    sentiment: float = Field(0.3, ge=0, le=1)
-    comment_quality: float = Field(0.3, ge=0, le=1)
+    semantic_similarity: float = Field(
+        0.3, ge=0, le=1, description="语义相似度权重"
+    )
+    popularity: float = Field(0.1, ge=0, le=1, description="基础热度权重")
+    sentiment: float = Field(0.3, ge=0, le=1, description="弹幕情感权重")
+    comment_quality: float = Field(
+        0.3, ge=0, le=1, description="评论质量权重"
+    )
 
 
 class RecommendRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=200)
-    category_id: str | None = None
-    limit: int = Field(10, ge=1, le=50)
-    page: int = Field(1, ge=1)
+    query: str = Field(
+        min_length=1,
+        max_length=200,
+        description="用户输入的关键词或标签",
+    )
+    category_id: str | None = Field(
+        None,
+        description="可选，指定学习方向分类 ID",
+    )
+    limit: int = Field(10, ge=1, le=50, description="返回视频数量")
+    page: int = Field(1, ge=1, description="页码")
     weights: Weights = Weights()
 
 
@@ -40,11 +53,11 @@ def get_connection():
     return pymysql.connect(**MYSQL_CONFIG)
 
 
-def get_optional_user_id(authorization: str = Header(default="")):
-    if not authorization.startswith("Bearer "):
+def get_optional_user_id(credentials: HTTPAuthorizationCredentials | None):
+    if not credentials or not credentials.credentials:
         return None
 
-    token = authorization.removeprefix("Bearer ")
+    token = credentials.credentials
     try:
         payload = security.decode_access_token(token)
     except Exception:
@@ -218,10 +231,10 @@ def get_categories():
 
 @router.get("/videos")
 def list_videos(
-    category_id: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    sort_by: str = Query("score"),
+    category_id: str | None = Query(None, description="学习方向分类 ID，可选"),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页视频数量"),
+    sort_by: str = Query("score", description="排序方式：score、view、time"),
 ):
     connection = get_connection()
     try:
@@ -287,7 +300,7 @@ def list_videos(
 
 
 @router.get("/up/{mid}/videos")
-def list_up_videos(mid: int):
+def list_up_videos(mid: int = ApiPath(description="UP 主 MID")):
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
@@ -331,7 +344,7 @@ def list_up_videos(mid: int):
 @router.post("/recommend")
 def recommend(
     payload: RecommendRequest,
-    authorization: str = Header(default=""),
+    credentials: HTTPAuthorizationCredentials = Depends(optional_bearer_scheme),
 ):
     categories, thresholds = load_categories()
 
@@ -343,7 +356,7 @@ def recommend(
             payload.query, categories, thresholds
         )
 
-    user_id = get_optional_user_id(authorization)
+    user_id = get_optional_user_id(credentials)
     if user_id:
         connection = get_connection()
         try:
@@ -411,7 +424,7 @@ def recommend(
 
 
 @router.get("/videos/{bvid}")
-def get_video(bvid: str):
+def get_video(bvid: str = ApiPath(description="视频 BV 号")):
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
@@ -445,9 +458,9 @@ def get_video(bvid: str):
 
 @router.get("/videos/{bvid}/comments")
 def get_video_comments(
-    bvid: str,
-    cursor: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    bvid: str = ApiPath(description="视频 BV 号"),
+    cursor: int = Query(0, ge=0, description="分页游标，传上一次返回的 next_cursor"),
+    limit: int = Query(20, ge=1, le=100, description="返回评论数量"),
 ):
     connection = get_connection()
     try:
@@ -479,9 +492,9 @@ def get_video_comments(
 
 @router.get("/videos/{bvid}/danmaku")
 def get_video_danmaku(
-    bvid: str,
-    cursor: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    bvid: str = ApiPath(description="视频 BV 号"),
+    cursor: int = Query(0, ge=0, description="分页游标，传上一次返回的 next_cursor"),
+    limit: int = Query(50, ge=1, le=200, description="返回弹幕数量"),
 ):
     connection = get_connection()
     try:
@@ -512,7 +525,7 @@ def get_video_danmaku(
 
 
 @router.get("/videos/{bvid}/subtitles")
-def get_video_subtitles(bvid: str):
+def get_video_subtitles(bvid: str = ApiPath(description="视频 BV 号")):
     connection = get_connection()
     try:
         with connection.cursor() as cur:
@@ -540,7 +553,7 @@ def get_video_subtitles(bvid: str):
 
 
 @router.get("/videos/{bvid}/analysis")
-def get_video_analysis(bvid: str):
+def get_video_analysis(bvid: str = ApiPath(description="视频 BV 号")):
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
