@@ -36,6 +36,7 @@ py-modules = [
     "crawler_common",
     "crawler_comment",
     "crawler_dm",
+    "crawler_for",
     "crawler_hot",
     "crawler_info",
     "crawler_search",

@@ -16,9 +16,9 @@ STATE_FILE = DATA_DIR / "bilibili_state.json"
 # 采集结果统一落在 output/ 下，按类别分四个平级目录
 OUTPUT_DIR = DATA_DIR / "output"
 VIDEO_OUTPUT_DIR = OUTPUT_DIR / "video"
-SEARCH_OUTPUT_DIR = OUTPUT_DIR / "search"
-UP_OUTPUT_DIR = OUTPUT_DIR / "up"
-HOT_OUTPUT_DIR = OUTPUT_DIR / "hot"
+SEARCH_OUTPUT_DIR = OUTPUT_DIR / "关键词搜索"
+UP_OUTPUT_DIR = OUTPUT_DIR / "UP主"
+HOT_OUTPUT_DIR = OUTPUT_DIR / "热搜"
 
 
 class ParsedPageRange(tuple):

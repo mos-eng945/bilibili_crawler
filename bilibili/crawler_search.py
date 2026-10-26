@@ -1,5 +1,6 @@
 """Bilibili 关键词视频搜索。"""
 
+import re
 from pathlib import Path
 
 from bilibili_api import (
@@ -19,20 +20,52 @@ from crawler_common import (
     normalize_url,
     parse_duration_seconds,
     request_with_retry,
+    run_timestamp,
     run_concurrently,
     safe_filename,
     timestamped_path,
     write_csv,
 )
+from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 
 # 搜索接口不返回分享数，写文件时去掉这一列，避免整列 0 被当成真实数据
 OUTPUT_COLUMNS = [column for column in SEARCH_COLUMNS if column != "share_count"]
 
 
-def get_search_dir(keyword, root=None):
+def get_search_dir(keyword, root=None, timestamped=True, run_time=None):
     """生成关键词搜索目录：`search/{关键词}/`。"""
     root = root or SEARCH_OUTPUT_DIR
-    return Path(root) / (safe_filename(keyword) or "search")
+    name = safe_filename(keyword, max_length=50) or "搜索"
+
+    if timestamped:
+        name = f"{name}+{run_time or run_timestamp()}"
+
+    return Path(root) / name
+
+
+def find_search_dir(keyword, root=None):
+    """查找关键词最新的时间戳目录。"""
+    root = Path(root) if root else SEARCH_OUTPUT_DIR
+    name = safe_filename(keyword, max_length=50) or "搜索"
+    pattern = re.compile(rf"^{re.escape(name)}\+\d{{8}}_\d{{6}}$")
+    candidates = []
+
+    if not root.is_dir():
+        return None
+
+    for path in root.iterdir():
+        if not path.is_dir():
+            continue
+
+        if not pattern.fullmatch(path.name):
+            continue
+
+        candidates.append(path)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def parse_search_video(item):
@@ -156,6 +189,9 @@ class SearchCrawler:
         pages=1,
         page_size=SEARCH_DEFAULT_PAGE_SIZE,
         workers=SEARCH_DEFAULT_WORKERS,
+        with_details=False,
+        detail_workers=DETAIL_DEFAULT_WORKERS,
+        timestamped_output=True,
     ):
         self.session = session
         self.keyword = str(keyword).strip()
@@ -170,6 +206,14 @@ class SearchCrawler:
             max(1, int(workers)),
             SEARCH_MAX_WORKERS,
         )
+        self.with_details = bool(with_details)
+        self.detail_workers = min(
+            max(1, int(detail_workers)),
+            SEARCH_MAX_WORKERS,
+        )
+        self.timestamped_output = bool(timestamped_output)
+        self.output_dir = None
+        self.bvids = []
 
         if not self.keyword:
             raise ValueError("搜索关键词不能为空")
@@ -185,13 +229,25 @@ class SearchCrawler:
             self.workers,
         )
         rows = build_search_rows(items)
+        self.bvids = list(
+            dict.fromkeys(
+                str(row.get("bvid") or "").strip()
+                for row in rows
+                if str(row.get("bvid") or "").strip()
+            )
+        )
         fill_author_follower_counts(
             rows,
             self.session.cookie,
             self.workers,
         )
 
-        output_dir = get_search_dir(self.keyword, self.output_root)
+        output_dir = get_search_dir(
+            self.keyword,
+            self.output_root,
+            timestamped=self.timestamped_output,
+        )
+        self.output_dir = output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         end_page = self.page + self.pages - 1
@@ -203,4 +259,13 @@ class SearchCrawler:
             f"保存 {len(rows)} 条，接口共 {total_results} 条；"
             f"已保存到 {output_path}"
         )
+
+        if self.with_details and self.bvids:
+            crawl_bvids(
+                self.bvids,
+                self.session,
+                output_root=output_dir / "视频详情",
+                workers=self.detail_workers,
+            )
+
         return output_path

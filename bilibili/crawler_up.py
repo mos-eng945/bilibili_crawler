@@ -18,22 +18,28 @@ from crawler_common import (
     normalize_url,
     parse_duration_seconds,
     request_with_retry,
+    run_timestamp,
     run_concurrently,
     safe_filename,
     timestamped_path,
     write_csv,
 )
+from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 
 USER_VIDEO_DEFAULT_PAGE_SIZE = 50
 USER_VIDEO_MAX_PAGE_SIZE = 50
 
 
-def get_up_dir(mid, name="", root=None):
+def get_up_dir(mid, name="", root=None, run_time=None):
     """生成 UP 主视频目录：`up/{MID}+{名字}/`。"""
     root = root or UP_OUTPUT_DIR
-    name = str(name or "").strip()
-    folder = f"{mid}+{safe_filename(name)}" if name else str(mid)
-    return Path(root) / folder
+    name = safe_filename(str(name or "").strip(), max_length=30)
+    timestamp = run_time or run_timestamp()
+
+    if not name:
+        name = "未知UP主"
+
+    return Path(root) / f"{mid}+{name}+{timestamp}"
 
 
 def parse_user_video(
@@ -188,6 +194,8 @@ class UpVideosCrawler:
         output_root=None,
         page_size=USER_VIDEO_DEFAULT_PAGE_SIZE,
         workers=SEARCH_DEFAULT_WORKERS,
+        with_details=False,
+        detail_workers=DETAIL_DEFAULT_WORKERS,
     ):
         self.session = session
 
@@ -209,6 +217,27 @@ class UpVideosCrawler:
             SEARCH_MAX_WORKERS,
         )
 
+        self.with_details = bool(with_details)
+        self.detail_workers = min(
+            max(1, int(detail_workers)),
+            SEARCH_MAX_WORKERS,
+        )
+
+    def crawl_details(self, bvids, output_root=None):
+        """按配置并发采集 BVID 的信息、字幕、弹幕和一级评论。"""
+        if output_root is None:
+            output_root = self.output_root
+
+        if output_root is None:
+            output_root = UP_OUTPUT_DIR
+
+        return crawl_bvids(
+            bvids,
+            self.session,
+            output_root=output_root,
+            workers=self.detail_workers,
+        )
+
     def run(self):
         items, total_results = fetch_user_video_items(
             self.mid,
@@ -220,16 +249,19 @@ class UpVideosCrawler:
 
         if not items:
             # 接口对不存在的 MID 也可能返回 code=0 + 空列表，不能当成功
-            raise RuntimeError(
-                f"UP 主 {self.mid} 没有公开视频，或该 MID 不存在"
-            )
+            raise RuntimeError(f"UP 主 {self.mid} 没有公开视频，或该 MID 不存在")
 
         follower_count = fetch_follower_count_safely(
             self.mid,
             "",
             self.session.cookie,
         )
-        bvids = [item.get("bvid", "") for item in items]
+        bvids = []
+        for item in items:
+            bvid = str(item.get("bvid") or "").strip()
+            if bvid:
+                bvids.append(bvid)
+
         video_infos = run_concurrently(
             lambda bvid: fetch_video_info_safely(
                 bvid,
@@ -260,4 +292,8 @@ class UpVideosCrawler:
             f"保存 {len(rows)} 条，接口共 {total_results} 条；"
             f"已保存到 {output_path}"
         )
+
+        if self.with_details and bvids:
+            self.crawl_details(bvids, output_dir / "视频详情")
+
         return output_path

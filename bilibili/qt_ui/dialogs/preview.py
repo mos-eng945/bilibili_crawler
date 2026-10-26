@@ -65,13 +65,21 @@ def detect_search_keyword(path):
     if path.name == "hot_list.csv":
         return None
 
-    parent = path.parent
+    search_root_names = {SEARCH_OUTPUT_DIR.name}
+    hot_root_names = {HOT_OUTPUT_DIR.name}
 
-    if parent.parent.name == SEARCH_OUTPUT_DIR.name:
-        return parent.name
+    for ancestor in path.parents:
+        if ancestor.parent.name in search_root_names:
+            return re.sub(r"\+\d{8}_\d{6}$", "", ancestor.name)
 
-    if parent.parent.parent.name == HOT_OUTPUT_DIR.name:
-        return parent.name
+        if ancestor.parent.parent.name in hot_root_names:
+            if ancestor.name != "关键词":
+                return ancestor.name
+
+            parts = path.relative_to(ancestor).parts
+
+            if len(parts) > 1:
+                return parts[0]
 
     return None
 
