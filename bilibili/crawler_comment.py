@@ -6,7 +6,7 @@ from datetime import datetime
 
 from bilibili_api import fetch_comment_page
 from config import DEFAULT_BVID
-from crawler_common import normalize_url, request_with_retry, write_csv
+from crawler_common import log, normalize_url, request_with_retry, write_csv
 from login import ensure_login
 from session import VideoSession
 
@@ -138,16 +138,19 @@ class CommentCrawler:
 
         video_dir = self.session.video_dir
         video_dir.mkdir(parents=True, exist_ok=True)
-        output_path = video_dir / f"comments_{self.session.bvid}.csv"
+        if self.session.structured_output:
+            output_path = video_dir / "comments.csv"
+        else:
+            output_path = video_dir / f"comments_{self.session.bvid}.csv"
         cursor = {}
         page_number = 0
         total_reply_count = 0
         collected_rows = []
         seen_rpids = set()
 
-        print(f"开始完整采集评论：{output_path}")
-        print(f"评论排序：时间顺序，每页 {COMMENT_PAGE_SIZE} 条")
-        print("开始采集评论，使用 WBI 游标分页")
+        log(f"开始完整采集评论：{output_path}")
+        log(f"评论排序：时间顺序，每页 {COMMENT_PAGE_SIZE} 条")
+        log("开始采集评论，使用 WBI 游标分页")
 
         while True:
             data = request_with_retry(
@@ -192,7 +195,7 @@ class CommentCrawler:
                 or page_number % COMMENT_PROGRESS_PAGE_INTERVAL == 0
                 or is_end
             ):
-                print(
+                log(
                     f"已获取第 {page_number} 页，"
                     f"本页获取 {len(new_rows)} 条，"
                     f"累计 {len(seen_rpids)} 条；"
@@ -206,7 +209,7 @@ class CommentCrawler:
         write_csv(output_path, COMMENT_COLUMNS, saved_rows)
         saved_count = len(saved_rows)
 
-        print(
+        log(
             f"评论已保存：{output_path}，"
             f"共 {saved_count} 条一级评论；"
             f"视频总评论 {total_reply_count} 条（含子评论）"

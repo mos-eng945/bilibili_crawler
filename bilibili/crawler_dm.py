@@ -18,6 +18,7 @@ from config import DEFAULT_BVID
 from crawler_common import (
     format_china_time,
     format_milliseconds,
+    log,
     request_with_retry,
     safe_filename,
 )
@@ -30,8 +31,18 @@ REQUEST_INTERVAL_SECONDS = 0.5
 MAX_CONSECUTIVE_FAILURES = 3
 
 
-def get_danmaku_paths(video_dir, pages):
+def get_danmaku_paths(video_dir, pages, structured_output=False):
     """为每个分 P 生成弹幕 CSV 路径，标题重复时追加 P 号。"""
+    if structured_output:
+        return {
+            page_info.get("page", 1): (
+                Path(video_dir)
+                / "danmaku"
+                / f"p{page_info.get('page', 1)}.csv"
+            )
+            for page_info in pages
+        }
+
     paths = {}
     used_names = set()
 
@@ -109,7 +120,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
     duration = page_info.get("duration") or session.video_info.get("duration", 0)
 
     if not cid:
-        print(f"跳过 P{page_number}：没有 cid")
+        log(f"跳过 P{page_number}：没有 cid")
         return 0
 
     if not aid:
@@ -124,7 +135,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
     failures = 0
 
     csv_file.parent.mkdir(parents=True, exist_ok=True)
-    print(f"开始采集 P{page_number}/{total_pages}：{part}（{total_segments} 段）")
+    log(f"开始采集 P{page_number}/{total_pages}：{part}（{total_segments} 段）")
 
     with open(csv_file, "w", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
@@ -152,7 +163,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
                 )
             except RuntimeError as exc:
                 failures += 1
-                print(f"P{page_number} 第 {segment_index} 段请求失败：{exc}")
+                log(f"P{page_number} 第 {segment_index} 段请求失败：{exc}")
 
                 if failures >= MAX_CONSECUTIVE_FAILURES:
                     raise RuntimeError(
@@ -169,7 +180,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
                 writer.writerows(rows)
                 saved_count += len(rows)
 
-            print(
+            log(
                 f"P{page_number} 第 {segment_index}/{total_segments} 段"
                 f"新增 {len(rows)} 条，累计 {saved_count} 条"
             )
@@ -177,7 +188,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
             if segment_index < total_segments:
                 time.sleep(REQUEST_INTERVAL_SECONDS)
 
-    print(f"P{page_number} 完成，共写入 {saved_count} 条弹幕")
+    log(f"P{page_number} 完成，共写入 {saved_count} 条弹幕")
     return saved_count
 
 
@@ -192,7 +203,11 @@ class DanmakuCrawler:
         # 从会话里取出要采集的分 P 列表和每个分 P 的输出路径
         pages = self.session.pages(self.page_range)
         video_page_count = self.session.page_count
-        csv_paths = get_danmaku_paths(self.session.video_dir, pages)
+        csv_paths = get_danmaku_paths(
+            self.session.video_dir,
+            pages,
+            structured_output=self.session.structured_output,
+        )
         total_saved = 0
 
         for page_info in pages:
@@ -203,7 +218,7 @@ class DanmakuCrawler:
                 csv_paths[page_info.get("page", 1)],
             )
 
-        print(f"爬取完成，共写入 {total_saved} 条弹幕")
+        log(f"爬取完成，共写入 {total_saved} 条弹幕")
         return total_saved
 
 

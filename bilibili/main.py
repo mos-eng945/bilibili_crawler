@@ -14,6 +14,7 @@ from crawler_common import (
     SEARCH_MAX_RESULTS,
     SEARCH_MAX_WORKERS,
 )
+from crawler_for import DETAIL_DEFAULT_WORKERS
 from login import ensure_login
 
 OPTION_FLAGS = {
@@ -23,6 +24,8 @@ OPTION_FLAGS = {
     "workers": "-w",
     "limit": "--limit",
     "language": "--language",
+    "with_details": "--with-details",
+    "detail_workers": "--detail-workers",
 }
 
 
@@ -141,6 +144,18 @@ def build_parser():
         default=None,
         help="字幕语言，例如 zh-CN 或 ai-zh",
     )
+    parser.add_argument(
+        "--with-details",
+        action="store_true",
+        default=None,
+        help="粗爬完成后，对发现的每个 BVID 执行完整采集",
+    )
+    parser.add_argument(
+        "--detail-workers",
+        type=int,
+        default=None,
+        help="深度采集时同时处理的 BVID 数量，默认 2，最大 5",
+    )
     return parser
 
 
@@ -165,13 +180,16 @@ def main(argv=None):
         ensure_login()
         return
 
+    if args.detail_workers is not None and not args.with_details:
+        parser.error("--detail-workers 必须与 --with-details 一起使用")
+
     bvid = args.bvid or DEFAULT_BVID
 
     if args.mid is not None:
         reject_unused_options(
             parser,
             args,
-            {"page_size", "workers"},
+            {"page_size", "workers", "with_details", "detail_workers"},
         )
 
         if not args.mid.strip().isdigit() or int(args.mid) <= 0:
@@ -186,6 +204,8 @@ def main(argv=None):
             args.mid,
             page_size=args.page_size or USER_VIDEO_DEFAULT_PAGE_SIZE,
             workers=args.workers or SEARCH_DEFAULT_WORKERS,
+            with_details=bool(args.with_details),
+            detail_workers=args.detail_workers or DETAIL_DEFAULT_WORKERS,
         ).run()
         return
 
@@ -193,7 +213,13 @@ def main(argv=None):
         reject_unused_options(
             parser,
             args,
-            {"search_page", "page_size", "workers"},
+            {
+                "search_page",
+                "page_size",
+                "workers",
+                "with_details",
+                "detail_workers",
+            },
         )
 
         if not args.keyword.strip():
@@ -221,6 +247,8 @@ def main(argv=None):
             pages=page_end - page_start + 1,
             page_size=page_size,
             workers=args.workers or SEARCH_DEFAULT_WORKERS,
+            with_details=bool(args.with_details),
+            detail_workers=args.detail_workers or DETAIL_DEFAULT_WORKERS,
         ).run()
         return
 
@@ -228,7 +256,13 @@ def main(argv=None):
         reject_unused_options(
             parser,
             args,
-            {"page_size", "workers", "limit"},
+            {
+                "page_size",
+                "workers",
+                "limit",
+                "with_details",
+                "detail_workers",
+            },
         )
 
         from crawler_hot import HotSearchCrawler
@@ -242,6 +276,8 @@ def main(argv=None):
             pages=1,
             page_size=args.page_size or SEARCH_DEFAULT_PAGE_SIZE,
             workers=args.workers or SEARCH_DEFAULT_WORKERS,
+            with_details=bool(args.with_details),
+            detail_workers=args.detail_workers or DETAIL_DEFAULT_WORKERS,
         ).run()
         return
 

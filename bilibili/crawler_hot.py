@@ -7,10 +7,12 @@ from config import HOT_OUTPUT_DIR
 from crawler_common import (
     SEARCH_DEFAULT_PAGE_SIZE,
     SEARCH_DEFAULT_WORKERS,
+    SEARCH_MAX_WORKERS,
     request_with_retry,
     run_timestamp,
     write_csv,
 )
+from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 from crawler_search import SearchCrawler
 
 
@@ -40,6 +42,8 @@ class HotSearchCrawler:
         pages=1,
         page_size=SEARCH_DEFAULT_PAGE_SIZE,
         workers=SEARCH_DEFAULT_WORKERS,
+        with_details=False,
+        detail_workers=DETAIL_DEFAULT_WORKERS,
     ):
         self.session = session
         self.limit = limit
@@ -47,6 +51,11 @@ class HotSearchCrawler:
         self.pages = pages
         self.page_size = page_size
         self.workers = workers
+        self.with_details = bool(with_details)
+        self.detail_workers = min(
+            max(1, int(detail_workers)),
+            SEARCH_MAX_WORKERS,
+        )
 
     def run(self):
         hot_items = request_with_retry(
@@ -57,8 +66,11 @@ class HotSearchCrawler:
 
         output_dir = get_hot_run_dir(run_timestamp())
         output_dir.mkdir(parents=True, exist_ok=True)
+        keywords_dir = output_dir / "关键词"
         summary_path = output_dir / "hot_list.csv"
         summary_rows = []
+        detail_groups = {}
+        seen_bvids = set()
 
         print(f"获取到 {len(hot_items)} 个热搜词")
 
@@ -77,15 +89,31 @@ class HotSearchCrawler:
             error = ""
 
             try:
-                SearchCrawler(
+                search_crawler = SearchCrawler(
                     self.session,
                     keyword,
-                    output_root=output_dir,
+                    output_root=keywords_dir,
                     page=self.page,
                     pages=self.pages,
                     page_size=self.page_size,
                     workers=self.workers,
-                ).run()
+                    timestamped_output=False,
+                )
+                search_crawler.run()
+                new_bvids = []
+
+                for bvid in search_crawler.bvids:
+                    if bvid in seen_bvids:
+                        continue
+
+                    seen_bvids.add(bvid)
+                    new_bvids.append(bvid)
+
+                if new_bvids:
+                    detail_groups.setdefault(
+                        search_crawler.output_dir,
+                        [],
+                    ).extend(new_bvids)
             except (RuntimeError, ValueError) as exc:
                 status = "failed"
                 error = str(exc)
@@ -105,4 +133,14 @@ class HotSearchCrawler:
         write_csv(summary_path, HOT_LIST_COLUMNS, summary_rows)
 
         print(f"热搜搜索完成，汇总文件：{summary_path}")
+
+        if self.with_details:
+            for keyword_dir, bvids in detail_groups.items():
+                crawl_bvids(
+                    bvids,
+                    self.session,
+                    output_root=keyword_dir / "视频详情",
+                    workers=self.detail_workers,
+                )
+
         return summary_path

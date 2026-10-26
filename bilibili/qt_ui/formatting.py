@@ -242,6 +242,12 @@ def format_preview_value(column, value):
 
 def friendly_video_name(folder_name):
     """把 output 里的视频目录名整理成易读名称。"""
+    match = re.match(r"^(.*)_(BV[0-9A-Za-z]+)_(.+)$", folder_name)
+
+    if match:
+        title, bvid, up_name = match.groups()
+        return f"{title} · {up_name} · {bvid}"
+
     first, separator, rest = folder_name.partition("_")
 
     if separator and first.startswith("BV"):
@@ -268,6 +274,23 @@ def friendly_file_name(path):
 
     if filename == "video_info.json":
         return "视频概览"
+
+    if filename == "comments.csv":
+        return "一级评论"
+
+    if path.parent.name == "danmaku":
+        match = re.fullmatch(r"p(\d+)\.csv", filename)
+
+        if match:
+            return f"弹幕 P{match.group(1)}"
+
+    if path.parent.parent.name == "subtitles":
+        match = re.fullmatch(r"p(\d+)\.(json|srt)", filename)
+
+        if match:
+            page, suffix = match.groups()
+            language = path.parent.name
+            return f"字幕 P{page} · {language} · {suffix.upper()}"
 
     if filename.startswith("comments_"):
         return "评论"
@@ -300,10 +323,12 @@ def friendly_file_name(path):
         return "热搜汇总"
 
     if filename.startswith("search_"):
-        return f"搜索结果 · {path.parent.name}{_count_suffix(path)}"
+        name = re.sub(r"\+\d{8}_\d{6}$", "", path.parent.name)
+        return f"搜索结果 · {name}{_count_suffix(path)}"
 
     if filename.startswith("videos_"):
-        return f"UP 主视频 · {path.parent.name}{_count_suffix(path)}"
+        name = re.sub(r"\+\d{8}_\d{6}$", "", path.parent.name)
+        return f"UP 主视频 · {name}{_count_suffix(path)}"
 
     return path.stem
 

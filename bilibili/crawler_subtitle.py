@@ -17,7 +17,7 @@ from bilibili_api import (
     get_player_subtitles,
 )
 from config import DEFAULT_BVID, parse_page_range
-from crawler_common import safe_filename, write_json
+from crawler_common import log, safe_filename, write_json
 from login import ensure_login
 from session import VideoSession
 
@@ -82,15 +82,22 @@ def save_subtitle(
     part,
     subtitle_item,
     subtitle_data,
+    structured_output=False,
 ):
     """保存字幕 JSON，并同时生成 SRT。"""
     language = safe_filename(subtitle_item.get("lan") or "unknown")
-    base_name = f"subtitle_{bvid}_p{page_number}_{language}"
 
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    json_path = video_dir / f"{base_name}.json"
-    srt_path = video_dir / f"{base_name}.srt"
+    if structured_output:
+        language_dir = video_dir / "subtitles" / language
+        language_dir.mkdir(parents=True, exist_ok=True)
+        json_path = language_dir / f"p{page_number}.json"
+        srt_path = language_dir / f"p{page_number}.srt"
+    else:
+        base_name = f"subtitle_{bvid}_p{page_number}_{language}"
+        json_path = video_dir / f"{base_name}.json"
+        srt_path = video_dir / f"{base_name}.srt"
 
     # cid 标识当前分 P 的播放内容；同一视频的不同分 P 使用不同 cid,公用一个bvid。
     # page 和 part 用于阅读，language 是轨道代码，language_name 仅用于展示。
@@ -133,7 +140,7 @@ class SubtitleCrawler:
             part = page.get("part", "")
 
             if not cid:
-                print(f"跳过 P{current_page}：没有 cid")
+                log(f"跳过 P{current_page}：没有 cid")
                 continue
 
             subtitle_items = get_player_subtitles(
@@ -151,16 +158,16 @@ class SubtitleCrawler:
                 ]
 
             if not subtitle_items:
-                print(f"P{current_page} 没有找到可下载字幕")
+                log(f"P{current_page} 没有找到可下载字幕")
                 continue
 
-            print(f"P{current_page} 找到 {len(subtitle_items)} 条字幕")
+            log(f"P{current_page} 找到 {len(subtitle_items)} 条字幕")
 
             for subtitle_item in subtitle_items:
                 subtitle_url = subtitle_item.get("subtitle_url")
 
                 if not subtitle_url:
-                    print(f"跳过 {subtitle_item.get('lan')}：没有字幕地址")
+                    log(f"跳过 {subtitle_item.get('lan')}：没有字幕地址")
                     continue
 
                 subtitle_data = download_subtitle_json(
@@ -175,13 +182,14 @@ class SubtitleCrawler:
                     part,
                     subtitle_item,
                     subtitle_data,
+                    structured_output=self.session.structured_output,
                 )
 
                 downloaded += 1
-                print(f"已保存：{json_path.name}")
-                print(f"已保存：{srt_path.name}")
+                log(f"已保存：{json_path.name}")
+                log(f"已保存：{srt_path.name}")
 
-        print(f"下载完成，共保存 {downloaded} 条字幕")
+        log(f"下载完成，共保存 {downloaded} 条字幕")
 
 
 def main():

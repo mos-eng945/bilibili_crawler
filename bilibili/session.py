@@ -4,6 +4,8 @@ cookie、WBI 密钥、视频信息和输出目录都按需获取并缓存，避�
 视频的多个采集任务重复读盘、重复请求。
 """
 
+from pathlib import Path
+
 from bilibili_api import (
     get_up_follower_count,
     get_video_info,
@@ -14,13 +16,28 @@ from crawler_common import safe_filename
 from login import get_cookie_header, load_state
 
 
-def get_video_dir(video_info):
+def get_video_dir(video_info, output_root=None):
     """生成视频输出目录：`video/{BV号}_{UP主}/`。"""
     up_name = safe_filename(
-        video_info.get("owner", {}).get("name") or "unknown"
+        video_info.get("owner", {}).get("name") or "unknown",
+        max_length=30,
     )
     bvid = safe_filename(video_info.get("bvid") or "unknown")
-    return VIDEO_OUTPUT_DIR / f"{bvid}_{up_name}"
+
+    if output_root is None:
+        return VIDEO_OUTPUT_DIR / f"{bvid}_{up_name}"
+
+    title = safe_filename(
+        video_info.get("title") or "",
+        max_length=50,
+    )
+
+    if title:
+        folder = f"{title}_{bvid}_{up_name}"
+    else:
+        folder = f"{bvid}_{up_name}"
+
+    return Path(output_root) / folder
 
 
 class Session:
@@ -70,9 +87,11 @@ class VideoSession(Session):
         mixin_key: WBI 签名密钥，首次访问时计算并缓存。
     """
 
-    def __init__(self, bvid, state=None):
+    def __init__(self, bvid, state=None, output_root=None):
         super().__init__(state)  # 初始化父类的 _state、_cookie、_mixin_key
         self.bvid = bvid
+        self._output_root = output_root
+        self.structured_output = output_root is not None
         self._video_info = None
         self._up_follower_count = None
         self._video_dir = None
@@ -112,7 +131,10 @@ class VideoSession(Session):
     def video_dir(self):
         # 目录名依赖视频标题和 UP 主，只计算一次
         if self._video_dir is None:
-            self._video_dir = get_video_dir(self.video_info)
+            self._video_dir = get_video_dir(
+                self.video_info,
+                self._output_root,
+            )
 
         return self._video_dir
 

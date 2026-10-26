@@ -3,6 +3,7 @@
 from config import DEFAULT_BVID
 from crawler_common import (
     format_published_at,
+    log,
     normalize_url,
     write_json,
     zone_name,
@@ -69,7 +70,7 @@ class VideoInfoCrawler:
 
         write_json(output_path, result)
 
-        print(f"视频信息已保存：{output_path}")
+        log(f"视频信息已保存：{output_path}")
         return output_path
 
 

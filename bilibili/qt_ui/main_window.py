@@ -26,6 +26,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -65,8 +66,9 @@ from crawler_common import (
     SEARCH_MAX_RESULTS,
     SEARCH_MAX_WORKERS,
 )
-from crawler_search import get_search_dir
+from crawler_search import find_search_dir
 from crawler_up import USER_VIDEO_DEFAULT_PAGE_SIZE
+from crawler_for import DETAIL_DEFAULT_WORKERS
 from qt_ui.dialogs import CompletionDialog, DataBrowserDialog
 from qt_ui.formatting import friendly_video_name
 from qt_ui.system_shell import focus_in_explorer, open_local_path
@@ -76,6 +78,9 @@ BVID_PATTERN = re.compile(r"^BV[0-9A-Za-z]+$")
 # 关键词搜索最多返回 1000 条，按每页 50 条算就是 20 页
 SEARCH_MAX_PAGES = math.ceil(SEARCH_MAX_RESULTS / SEARCH_DEFAULT_PAGE_SIZE)
 LOGIN_PROMPT = "登录完成后按回车"
+PROGRESS_START_PREFIX = "::PROGRESS_START::"
+PROGRESS_UPDATE_PREFIX = "::PROGRESS::"
+PROGRESS_DONE_PREFIX = "::PROGRESS_DONE::"
 SETTINGS_ORGANIZATION = "BilibiliDataCrawler"
 SETTINGS_APPLICATION = "BilibiliDataCrawler"
 VIDEO_ACTION_FLAGS = {
@@ -138,15 +143,17 @@ def search_project_dir(keyword):
     if not str(keyword or "").strip():
         return None
 
-    path = get_search_dir(keyword)
-    return path if path.exists() else None
+    return find_search_dir(keyword, SEARCH_OUTPUT_DIR)
 
 
 def find_user_dir(mid):
     """按 MID 前缀匹配 `{mid}` 或 `{mid}+*` 的最新目录。"""
     mid = str(mid or "").strip()
 
-    if not mid or not UP_OUTPUT_DIR.exists():
+    if not mid:
+        return None
+
+    if not UP_OUTPUT_DIR.exists():
         return None
 
     matches = [
@@ -169,12 +176,14 @@ def hot_project_dir():
 
 def latest_search_keyword():
     """最近修改过的关键词目录名。"""
-    return latest_directory_name(SEARCH_OUTPUT_DIR)
+    name = latest_directory_name(SEARCH_OUTPUT_DIR)
+    return re.sub(r"\+\d{8}_\d{6}$", "", name)
 
 
 def latest_user_mid():
     """最近修改过的 UP 主目录里的 MID。"""
-    return latest_directory_name(UP_OUTPUT_DIR).split("+", 1)[0]
+    name = latest_directory_name(UP_OUTPUT_DIR)
+    return name.split("+", 1)[0]
 
 
 class SearchPageRangeValidator(QValidator):
@@ -213,6 +222,7 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._login_prompt_seen = False
         self._scan_buffer = ""
+        self._stdout_line_buffer = ""
         self._task_title = ""
         self._task_page = 0
         self._task_has_output = False
@@ -626,6 +636,16 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _bool_setting(settings, key, default):
+        """读取布尔配置，兼容 QSettings 返回的字符串值。"""
+        value = settings.value(key, default)
+
+        if isinstance(value, bool):
+            return value
+
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     def _restore_settings(self):
         settings = self._settings()
 
@@ -674,6 +694,17 @@ class MainWindow(QMainWindow):
                 settings, "search/workers", SEARCH_DEFAULT_WORKERS
             )
         )
+        self.search_with_details.setChecked(
+            self._bool_setting(settings, "search/with_details", False)
+        )
+        self.search_detail_workers.setValue(
+            self._int_setting(
+                settings,
+                "search/detail_workers",
+                DETAIL_DEFAULT_WORKERS,
+            )
+        )
+        self._update_search_detail_controls()
 
         mid = str(settings.value("user/mid", "")).strip()
 
@@ -688,6 +719,17 @@ class MainWindow(QMainWindow):
                 settings, "user/workers", SEARCH_DEFAULT_WORKERS
             )
         )
+        self.user_with_details.setChecked(
+            self._bool_setting(settings, "user/with_details", False)
+        )
+        self.user_detail_workers.setValue(
+            self._int_setting(
+                settings,
+                "user/detail_workers",
+                DETAIL_DEFAULT_WORKERS,
+            )
+        )
+        self._update_user_detail_controls()
 
         self.hot_limit.setValue(
             self._int_setting(settings, "hot/limit", 10)
@@ -697,6 +739,17 @@ class MainWindow(QMainWindow):
                 settings, "hot/workers", SEARCH_DEFAULT_WORKERS
             )
         )
+        self.hot_with_details.setChecked(
+            self._bool_setting(settings, "hot/with_details", False)
+        )
+        self.hot_detail_workers.setValue(
+            self._int_setting(
+                settings,
+                "hot/detail_workers",
+                DETAIL_DEFAULT_WORKERS,
+            )
+        )
+        self._update_hot_detail_controls()
 
         page_index = self._int_setting(settings, "window/page", 0)
         self._switch_page(page_index)
@@ -729,15 +782,39 @@ class MainWindow(QMainWindow):
             "search/workers",
             self.search_workers.value(),
         )
+        settings.setValue(
+            "search/with_details",
+            self.search_with_details.isChecked(),
+        )
+        settings.setValue(
+            "search/detail_workers",
+            self.search_detail_workers.value(),
+        )
         settings.setValue("user/mid", self.mid_edit.text().strip())
         settings.setValue(
             "user/workers",
             self.user_workers.value(),
         )
+        settings.setValue(
+            "user/with_details",
+            self.user_with_details.isChecked(),
+        )
+        settings.setValue(
+            "user/detail_workers",
+            self.user_detail_workers.value(),
+        )
         settings.setValue("hot/limit", self.hot_limit.value())
         settings.setValue(
             "hot/workers",
             self.hot_workers.value(),
+        )
+        settings.setValue(
+            "hot/with_details",
+            self.hot_with_details.isChecked(),
+        )
+        settings.setValue(
+            "hot/detail_workers",
+            self.hot_detail_workers.value(),
         )
         settings.setValue("window/page", self.pages.currentIndex())
         settings.sync()
@@ -1017,12 +1094,43 @@ class MainWindow(QMainWindow):
         )
         self._add_param(grid, 2, 0, "同时请求数", self.search_workers)
 
+        self.search_with_details = QCheckBox(
+            "对本次搜索到的所有 BVID 执行完整采集"
+        )
+        self.search_with_details.setToolTip(
+            "开启后，关键词搜索完成后会继续采集全部视频详情"
+        )
+        self._add_param(grid, 3, 0, "深度采集", self.search_with_details)
+
+        self.search_detail_workers = self._make_spin_box(
+            1,
+            SEARCH_MAX_WORKERS,
+            DETAIL_DEFAULT_WORKERS,
+            width=140,
+        )
+        self.search_detail_workers.setToolTip(
+            "同时处理的 BVID 数量；过高并发可能触发 B 站限制"
+        )
+        self.search_detail_workers_label = self._add_param(
+            grid,
+            4,
+            0,
+            "精爬并发数",
+            self.search_detail_workers,
+        )
+
         self.keyword_edit.textChanged.connect(self._update_search_preview)
         self.keyword_edit.textChanged.connect(
             self._schedule_project_refresh
         )
         self.search_page_edit.textChanged.connect(self._update_search_preview)
         self.search_workers.valueChanged.connect(self._update_search_preview)
+        self.search_with_details.toggled.connect(
+            self._update_search_detail_controls
+        )
+        self.search_detail_workers.valueChanged.connect(
+            self._update_search_preview
+        )
 
         (
             self.search_execution_summary,
@@ -1035,6 +1143,7 @@ class MainWindow(QMainWindow):
             self._start_search_task,
         )
         self._balance_parameter_rows(grid)
+        self._update_search_detail_controls()
         self._update_search_preview()
         return page
 
@@ -1055,11 +1164,42 @@ class MainWindow(QMainWindow):
         )
         self._add_param(grid, 1, 0, "同时请求数", self.user_workers)
 
+        self.user_with_details = QCheckBox(
+            "对本次所有 BVID 采集信息、字幕、弹幕和评论"
+        )
+        self.user_with_details.setToolTip(
+            "开启后，UP 主视频列表采集完成后会逐个处理全部 BVID"
+        )
+        self._add_param(grid, 2, 0, "深度采集", self.user_with_details)
+
+        self.user_detail_workers = self._make_spin_box(
+            1,
+            SEARCH_MAX_WORKERS,
+            DETAIL_DEFAULT_WORKERS,
+            width=140,
+        )
+        self.user_detail_workers.setToolTip(
+            "同时处理的 BVID 数量；过高并发可能触发 B 站限制"
+        )
+        self.user_detail_workers_label = self._add_param(
+            grid,
+            3,
+            0,
+            "精爬并发数",
+            self.user_detail_workers,
+        )
+
         self.mid_edit.textChanged.connect(self._update_user_preview)
         self.mid_edit.textChanged.connect(
             self._schedule_project_refresh
         )
         self.user_workers.valueChanged.connect(self._update_user_preview)
+        self.user_with_details.toggled.connect(
+            self._update_user_detail_controls
+        )
+        self.user_detail_workers.valueChanged.connect(
+            self._update_user_preview
+        )
 
         (
             self.user_execution_summary,
@@ -1072,6 +1212,7 @@ class MainWindow(QMainWindow):
             self._start_user_video_task,
         )
         self._balance_parameter_rows(grid)
+        self._update_user_detail_controls()
         self._update_user_preview()
         return page
 
@@ -1090,8 +1231,39 @@ class MainWindow(QMainWindow):
         )
         self._add_param(grid, 1, 0, "关键词并发数", self.hot_workers)
 
+        self.hot_with_details = QCheckBox(
+            "对本次热搜发现的全部 BVID 执行完整采集"
+        )
+        self.hot_with_details.setToolTip(
+            "开启后，全部热搜词搜索完成后会去重并继续采集视频详情"
+        )
+        self._add_param(grid, 2, 0, "深度采集", self.hot_with_details)
+
+        self.hot_detail_workers = self._make_spin_box(
+            1,
+            SEARCH_MAX_WORKERS,
+            DETAIL_DEFAULT_WORKERS,
+            width=140,
+        )
+        self.hot_detail_workers.setToolTip(
+            "同时处理的 BVID 数量；过高并发可能触发 B 站限制"
+        )
+        self.hot_detail_workers_label = self._add_param(
+            grid,
+            3,
+            0,
+            "精爬并发数",
+            self.hot_detail_workers,
+        )
+
         self.hot_limit.valueChanged.connect(self._update_hot_preview)
         self.hot_workers.valueChanged.connect(self._update_hot_preview)
+        self.hot_with_details.toggled.connect(
+            self._update_hot_detail_controls
+        )
+        self.hot_detail_workers.valueChanged.connect(
+            self._update_hot_preview
+        )
 
         (
             self.hot_execution_summary,
@@ -1104,6 +1276,7 @@ class MainWindow(QMainWindow):
             self._start_hot_search_task,
         )
         self._balance_parameter_rows(grid)
+        self._update_hot_detail_controls()
         self._update_hot_preview()
         return page
 
@@ -1245,18 +1418,39 @@ class MainWindow(QMainWindow):
                 str(self.search_workers.value()),
             ]
         )
+
+        if self.search_with_details.isChecked():
+            args.append("--with-details")
+            args.extend(
+                [
+                    "--detail-workers",
+                    str(self.search_detail_workers.value()),
+                ]
+            )
+
         return args
 
     def _user_args(self):
-        return [
+        args = [
             "--mid",
             self.mid_edit.text().strip() or "<未填写>",
             "-w",
             str(self.user_workers.value()),
         ]
 
+        if self.user_with_details.isChecked():
+            args.append("--with-details")
+            args.extend(
+                [
+                    "--detail-workers",
+                    str(self.user_detail_workers.value()),
+                ]
+            )
+
+        return args
+
     def _hot_args(self):
-        return [
+        args = [
             "-H",
             "--limit",
             str(self.hot_limit.value()),
@@ -1264,6 +1458,16 @@ class MainWindow(QMainWindow):
             str(self.hot_workers.value()),
         ]
 
+        if self.hot_with_details.isChecked():
+            args.append("--with-details")
+            args.extend(
+                [
+                    "--detail-workers",
+                    str(self.hot_detail_workers.value()),
+                ]
+            )
+
+        return args
     @staticmethod
     def _preview_command(args):
         parts = [str(ENTRY_SCRIPT), *args]
@@ -1320,62 +1524,92 @@ class MainWindow(QMainWindow):
         if page_range.isdigit() and int(page_range) > 1:
             display_page_range = f"1-{page_range}"
 
-        self.search_execution_summary.setText(
-            "\n".join(
-                [
-                    "任务：关键词搜索",
-                    f"关键词：{keyword}",
-                    f"页码：{display_page_range}",
-                    (
-                        f"读取：每次 {SEARCH_DEFAULT_PAGE_SIZE} 条 · "
-                        f"同时 {self.search_workers.value()} 个请求"
-                    ),
-                ]
+        summary = [
+            "任务：关键词搜索",
+            f"关键词：{keyword}",
+            f"页码：{display_page_range}",
+            (
+                f"读取：每次 {SEARCH_DEFAULT_PAGE_SIZE} 条 · "
+                f"同时 {self.search_workers.value()} 个请求"
+            ),
+        ]
+
+        if self.search_with_details.isChecked():
+            summary.append(
+                f"深度采集：本次全部 BVID · "
+                f"同时 {self.search_detail_workers.value()} 个"
             )
-        )
+
+        self.search_execution_summary.setText("\n".join(summary))
         self.search_command_preview.setPlainText(
             self._preview_command(self._search_args(page_range))
         )
+
+    def _update_search_detail_controls(self, *_):
+        enabled = self.search_with_details.isChecked()
+        self.search_detail_workers.setEnabled(enabled)
+        self.search_detail_workers_label.setEnabled(enabled)
+        self._update_search_preview()
 
     def _update_user_preview(self, *_):
         if not hasattr(self, "user_execution_summary"):
             return
 
-        self.user_execution_summary.setText(
-            "\n".join(
-                [
-                    "任务：UP 主全部视频",
-                    f"UP 主 MID：{self.mid_edit.text().strip() or '未填写'}",
-                    (
-                        f"读取：每次 {USER_VIDEO_DEFAULT_PAGE_SIZE} 条 · "
-                        f"同时 {self.user_workers.value()} 个请求"
-                    ),
-                ]
+        summary = [
+            "任务：UP 主全部视频",
+            f"UP 主 MID：{self.mid_edit.text().strip() or '未填写'}",
+            (
+                f"读取：每次 {USER_VIDEO_DEFAULT_PAGE_SIZE} 条 · "
+                f"同时 {self.user_workers.value()} 个请求"
+            ),
+        ]
+
+        if self.user_with_details.isChecked():
+            summary.append(
+                f"深度采集：本次全部 BVID · "
+                f"同时 {self.user_detail_workers.value()} 个"
             )
-        )
+
+        self.user_execution_summary.setText("\n".join(summary))
         self.user_command_preview.setPlainText(
             self._preview_command(self._user_args())
         )
+
+    def _update_user_detail_controls(self, *_):
+        enabled = self.user_with_details.isChecked()
+        self.user_detail_workers.setEnabled(enabled)
+        self.user_detail_workers_label.setEnabled(enabled)
+        self._update_user_preview()
 
     def _update_hot_preview(self, *_):
         if not hasattr(self, "hot_execution_summary"):
             return
 
-        self.hot_execution_summary.setText(
-            "\n".join(
-                [
-                    "任务：热搜搜索",
-                    f"热搜：前 {self.hot_limit.value()} 条",
-                    (
-                        f"读取：每次 {SEARCH_DEFAULT_PAGE_SIZE} 条 · "
-                        f"关键词内部 {self.hot_workers.value()} 个请求"
-                    ),
-                ]
+        summary = [
+            "任务：热搜搜索",
+            f"热搜：前 {self.hot_limit.value()} 条",
+            (
+                f"读取：每次 {SEARCH_DEFAULT_PAGE_SIZE} 条 · "
+                f"关键词内部 {self.hot_workers.value()} 个请求"
+            ),
+        ]
+
+        if self.hot_with_details.isChecked():
+            summary.append(
+                f"深度采集：全部热搜去重 BVID · "
+                f"同时 {self.hot_detail_workers.value()} 个"
             )
-        )
+
+        self.hot_execution_summary.setText("\n".join(summary))
         self.hot_command_preview.setPlainText(
             self._preview_command(self._hot_args())
         )
+
+    def _update_hot_detail_controls(self, *_):
+        enabled = self.hot_with_details.isChecked()
+        self.hot_detail_workers.setEnabled(enabled)
+        self.hot_detail_workers_label.setEnabled(enabled)
+        self._update_hot_preview()
 
     def _apply_style(self):
         self.setStyleSheet(APP_STYLE)
@@ -1504,6 +1738,7 @@ class MainWindow(QMainWindow):
         self._nav_buttons[active_page].setChecked(True)
         self._login_prompt_seen = False
         self._scan_buffer = ""
+        self._stdout_line_buffer = ""
 
         process = QProcess(self)
         process.setProgram(sys.executable)
@@ -1533,8 +1768,15 @@ class MainWindow(QMainWindow):
 
         output = self._process.readAllStandardOutput().toStdString()
         output = output.replace("\r\n", "\n").replace("\r", "\n")
-        self._append_log(output)
         self._scan_buffer = (self._scan_buffer + output)[-1000:]
+        self._stdout_line_buffer += output
+
+        while "\n" in self._stdout_line_buffer:
+            line, self._stdout_line_buffer = self._stdout_line_buffer.split(
+                "\n",
+                1,
+            )
+            self._handle_output_line(f"{line}\n")
 
         if "检测到有效登录状态" in output:
             self._paint_metric(self.metric_login_value, "已连接")
@@ -1546,6 +1788,60 @@ class MainWindow(QMainWindow):
         if LOGIN_PROMPT in self._scan_buffer and not self._login_prompt_seen:
             self._login_prompt_seen = True
             QTimer.singleShot(0, self._show_login_dialog)
+
+    def _handle_output_line(self, line):
+        """解析进度事件，其余内容写入运行日志。"""
+        text = line.strip()
+
+        if text.startswith(PROGRESS_START_PREFIX):
+            value = text.removeprefix(PROGRESS_START_PREFIX)
+
+            try:
+                total = int(value)
+            except ValueError:
+                total = 0
+
+            if total > 0:
+                self.progress.setRange(0, total)
+                self.progress.setValue(0)
+                self.progress.setTextVisible(True)
+                self.progress.setFormat("深度采集 %v/%m")
+                self.statusBar().showMessage(f"深度采集 0/{total}")
+            return
+
+        if text.startswith(PROGRESS_UPDATE_PREFIX):
+            value = text.removeprefix(PROGRESS_UPDATE_PREFIX)
+
+            try:
+                completed_text, total_text = value.split("/", 1)
+                completed = int(completed_text)
+                total = int(total_text)
+            except (ValueError, TypeError):
+                return
+
+            if total > 0:
+                self.progress.setRange(0, total)
+                self.progress.setValue(completed)
+                self.statusBar().showMessage(
+                    f"深度采集 {completed}/{total}"
+                )
+            return
+
+        if text.startswith(PROGRESS_DONE_PREFIX):
+            value = text.removeprefix(PROGRESS_DONE_PREFIX)
+
+            try:
+                _, total_text = value.split("/", 1)
+                total = int(total_text)
+            except (ValueError, TypeError):
+                return
+
+            if total > 0:
+                self.progress.setRange(0, total)
+                self.progress.setValue(total)
+            return
+
+        self._append_log(line)
 
     def _show_login_dialog(self):
         if self._process is None:
@@ -1561,6 +1857,10 @@ class MainWindow(QMainWindow):
             self._process.write(b"\n")
 
     def _process_finished(self, exit_code, exit_status):
+        if self._stdout_line_buffer:
+            self._handle_output_line(self._stdout_line_buffer)
+            self._stdout_line_buffer = ""
+
         success = (
             exit_status == QProcess.ExitStatus.NormalExit
             and exit_code == 0
@@ -1632,6 +1932,9 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy)
 
         if busy:
+            self.progress.setRange(0, 0)
+            self.progress.setValue(0)
+            self.progress.setTextVisible(False)
             self.progress.show()
             self._refresh_timer.start()
         else:
