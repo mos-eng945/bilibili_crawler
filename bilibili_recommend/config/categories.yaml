@@ -50,43 +50,31 @@ categories:
       - 计算机技术
       - 数据科学
 
-  - id: kaoyan_math
-    name: 考研数学
-    description: 高等数学、线性代数、概率论等考研数学课程
+  - id: stem
+    name: 理工学习
+    description: 高等数学、物理、化学、机械、电子、土木等理工科课程
     keywords:
       - 高数
       - 高等数学
       - 线性代数
       - 概率论
-      - 数一
-      - 数二
-      - 数三
-      - 考研数学
       - 微积分
-      - 导数
-      - 积分
-      - 极限
+      - 大学物理
+      - 物理
+      - 化学
+      - 电路
+      - 力学
+      - 机械
+      - 电子
+      - 自动化
+      - 土木
+      - 材料
+      - 生物
+      - 工程
     bilibili_partitions:
       - 校园学习
-      - 考研
-
-  - id: kaoyan_english
-    name: 考研英语
-    description: 考研英语词汇、阅读、作文、翻译等课程
-    keywords:
-      - 考研英语
-      - 阅读理解
-      - 作文
-      - 完形填空
-      - 翻译
-      - 词汇
-      - 真题
-      - 英语一
-      - 英语二
-    bilibili_partitions:
-      - 校园学习
-      - 考研
-      - 英语
+      - 科学
+      - 科技区
 
   - id: english
     name: 英语学习
@@ -253,9 +241,10 @@ categories:
 
   - id: exam_cert
     name: 升学考证
-    description: 高考、专升本、考公、法考、教师资格等考试内容
+    description: 高考、考研、专升本、考公、法考、教师资格等考试内容
     keywords:
       - 高考
+      - 考研
       - 专升本
       - 考公
       - 公务员

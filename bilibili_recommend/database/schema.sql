@@ -6,7 +6,6 @@ USE bilibili;
 
 CREATE TABLE IF NOT EXISTS videos (
     bvid             VARCHAR(32) PRIMARY KEY,
-    aid              BIGINT DEFAULT 0,
     title            TEXT,
     description      TEXT,
     mid              BIGINT DEFAULT 0,

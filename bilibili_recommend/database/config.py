@@ -41,7 +41,7 @@ CRAWLER_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = Path(
     os.environ.get(
         "BILIBILI_OUTPUT_DIR",
-        CRAWLER_ROOT.parent / "bilibili_crawler" / "bilibili" / "output",
+        CRAWLER_ROOT.parent / "bilibili" / "output",
     )
 )
 

@@ -25,6 +25,30 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 """
 
 
+FAVORITES_DDL = """
+CREATE TABLE IF NOT EXISTS favorites (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    bvid       VARCHAR(32) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_bvid (user_id, bvid),
+    KEY idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+
+SEARCH_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS search_history (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id     BIGINT NOT NULL,
+    keyword     VARCHAR(200) DEFAULT '',
+    category_id VARCHAR(64) DEFAULT '',
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+
 def get_connection():
     return pymysql.connect(**MYSQL_CONFIG)
 
@@ -35,6 +59,8 @@ def ensure_tables():
         with connection.cursor() as cursor:
             cursor.execute(USERS_DDL)
             cursor.execute(LOGIN_ATTEMPTS_DDL)
+            cursor.execute(FAVORITES_DDL)
+            cursor.execute(SEARCH_HISTORY_DDL)
         connection.commit()
     finally:
         connection.close()

@@ -9,7 +9,13 @@ import database
 import recommend
 import security
 from config import DEFAULT_AVATAR
-from schemas import LoginRequest, ProfileUpdate, RegisterRequest, UserOut
+from schemas import (
+    FavoriteRequest,
+    LoginRequest,
+    ProfileUpdate,
+    RegisterRequest,
+    UserOut,
+)
 
 
 app = FastAPI(title="Bilibili Learning Auth")
@@ -51,7 +57,7 @@ def get_current_user(
 
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT username, avatar, created_at FROM users WHERE username = %s",
+            "SELECT id, username, avatar, created_at FROM users WHERE username = %s",
             (username,),
         )
         row = cursor.fetchone()
@@ -60,9 +66,10 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="用户不存在")
 
     return {
-        "username": row[0],
-        "avatar": row[1],
-        "created_at": row[2],
+        "id": row[0],
+        "username": row[1],
+        "avatar": row[2],
+        "created_at": row[3],
     }
 
 
@@ -223,4 +230,117 @@ def update_profile(
         "avatar": row[1],
         "created_at": str(created_at),
     }
+
+
+@app.post("/api/user/favorites", status_code=201)
+def add_favorite(
+    payload: FavoriteRequest,
+    user=Depends(get_current_user),
+    connection=Depends(get_db),
+):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT IGNORE INTO favorites (user_id, bvid) VALUES (%s, %s)",
+            (user["id"], payload.bvid),
+        )
+    connection.commit()
+    return {"message": "收藏成功"}
+
+
+@app.get("/api/user/favorites")
+def get_favorites(
+    user=Depends(get_current_user),
+    connection=Depends(get_db),
+):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT f.bvid, v.title, u.up_name, v.cover_url, f.created_at
+            FROM favorites f
+            JOIN videos v ON v.bvid = f.bvid
+            LEFT JOIN up_info u ON u.mid = v.mid
+            WHERE f.user_id = %s
+            ORDER BY f.created_at DESC
+            """,
+            (user["id"],),
+        )
+        rows = cursor.fetchall()
+
+    favorites = []
+    for row in rows:
+        created_at = row[4]
+        if hasattr(created_at, "strftime"):
+            created_at = created_at.strftime("%Y-%m-%d %H:%M:%S")
+        favorites.append(
+            {
+                "bvid": row[0],
+                "title": row[1],
+                "up_name": row[2],
+                "cover_url": row[3],
+                "favorited_at": str(created_at),
+            }
+        )
+    return {"favorites": favorites}
+
+
+@app.delete("/api/user/favorites/{bvid}")
+def remove_favorite(
+    bvid: str,
+    user=Depends(get_current_user),
+    connection=Depends(get_db),
+):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM favorites WHERE user_id = %s AND bvid = %s",
+            (user["id"], bvid),
+        )
+    connection.commit()
+    return {"message": "已取消收藏"}
+
+
+@app.get("/api/user/search_history")
+def get_search_history(
+    user=Depends(get_current_user),
+    connection=Depends(get_db),
+):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT keyword, category_id, created_at
+            FROM search_history
+            WHERE user_id = %s
+            ORDER BY id DESC
+            LIMIT 100
+            """,
+            (user["id"],),
+        )
+        rows = cursor.fetchall()
+
+    history = []
+    for row in rows:
+        created_at = row[2]
+        if hasattr(created_at, "strftime"):
+            created_at = created_at.strftime("%Y-%m-%d %H:%M:%S")
+        history.append(
+            {
+                "keyword": row[0],
+                "category_id": row[1],
+                "created_at": str(created_at),
+            }
+        )
+    return {"history": history}
+
+
+@app.delete("/api/user/search_history")
+def clear_search_history(
+    user=Depends(get_current_user),
+    connection=Depends(get_db),
+):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM search_history WHERE user_id = %s",
+            (user["id"],),
+        )
+    connection.commit()
+    return {"message": "已清空搜索历史"}
 

@@ -1,17 +1,19 @@
 """Recommendation, category and video endpoints."""
 
 import math
+from datetime import datetime
 from pathlib import Path
 
 import pymysql
 import yaml
 import jieba
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import MYSQL_CONFIG
+import security
 
 
 router = APIRouter(prefix="/api", tags=["recommend"])
@@ -36,6 +38,40 @@ class RecommendRequest(BaseModel):
 
 def get_connection():
     return pymysql.connect(**MYSQL_CONFIG)
+
+
+def get_optional_user_id(authorization: str = Header(default="")):
+    if not authorization.startswith("Bearer "):
+        return None
+
+    token = authorization.removeprefix("Bearer ")
+    try:
+        payload = security.decode_access_token(token)
+    except Exception:
+        return None
+
+    username = payload.get("sub")
+    if not username:
+        return None
+
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM users WHERE username = %s",
+                (username,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+
+    return row[0] if row else None
+
+
+def serialize_value(value):
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return value
 
 
 def tokenize(text):
@@ -180,8 +216,123 @@ def get_categories():
     }
 
 
+@router.get("/videos")
+def list_videos(
+    category_id: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("score"),
+):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            category_filter = ""
+            params = []
+            if category_id:
+                category_filter = (
+                    "AND v.bvid IN ("
+                    "SELECT bvid FROM video_categories WHERE category_id = %s"
+                    ")"
+                )
+                params.append(category_id)
+
+            cursor.execute(
+                f"SELECT COUNT(*) FROM videos v WHERE 1 = 1 {category_filter}",
+                params,
+            )
+            total = cursor.fetchone()[0]
+
+            order_map = {
+                "score": "COALESCE(s.popularity, 0) DESC",
+                "view": "v.view_count DESC",
+                "time": "v.published_at DESC",
+            }
+            order_by = order_map.get(sort_by, order_map["score"])
+
+            offset = (page - 1) * page_size
+            cursor.execute(
+                f"""
+                SELECT v.bvid, v.title, u.up_name, v.cover_url, v.view_count,
+                       COALESCE(s.popularity, 0) AS score
+                FROM videos v
+                LEFT JOIN up_info u ON u.mid = v.mid
+                LEFT JOIN video_scores s ON s.bvid = v.bvid
+                WHERE 1 = 1 {category_filter}
+                ORDER BY {order_by}
+                LIMIT %s OFFSET %s
+                """,
+                params + [page_size, offset],
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+
+    videos = [
+        {
+            "bvid": row[0],
+            "title": row[1],
+            "up_name": row[2],
+            "cover_url": row[3],
+            "view_count": row[4],
+            "score": round(float(row[5]), 4),
+        }
+        for row in rows
+    ]
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "videos": videos,
+    }
+
+
+@router.get("/up/{mid}/videos")
+def list_up_videos(mid: int):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT up_name FROM up_info WHERE mid = %s",
+                (mid,),
+            )
+            up_row = cursor.fetchone()
+
+            cursor.execute(
+                """
+                SELECT v.bvid, v.title, v.cover_url, v.view_count,
+                       COALESCE(s.popularity, 0) AS score
+                FROM videos v
+                LEFT JOIN video_scores s ON s.bvid = v.bvid
+                WHERE v.mid = %s
+                ORDER BY v.view_count DESC
+                """,
+                (mid,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+
+    return {
+        "mid": mid,
+        "up_name": up_row[0] if up_row else "",
+        "videos": [
+            {
+                "bvid": row[0],
+                "title": row[1],
+                "cover_url": row[2],
+                "view_count": row[3],
+                "score": round(float(row[4]), 4),
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.post("/recommend")
-def recommend(payload: RecommendRequest):
+def recommend(
+    payload: RecommendRequest,
+    authorization: str = Header(default=""),
+):
     categories, thresholds = load_categories()
 
     if payload.category_id:
@@ -191,6 +342,22 @@ def recommend(payload: RecommendRequest):
         category, candidates = classify_result(
             payload.query, categories, thresholds
         )
+
+    user_id = get_optional_user_id(authorization)
+    if user_id:
+        connection = get_connection()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO search_history (user_id, keyword, category_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (user_id, payload.query, category.get("id", "")),
+                )
+            connection.commit()
+        finally:
+            connection.close()
 
     videos = load_videos()
     target_category = category.get("id")
@@ -248,20 +415,19 @@ def get_video(bvid: str):
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT v.bvid, v.title, v.description, u.up_name, v.partition_name,
-                       v.cover_url, v.view_count, v.like_count, v.favorite_count,
-                       v.published_at
-                FROM videos v
-                LEFT JOIN up_info u ON u.mid = v.mid
-                WHERE v.bvid = %s
-                """,
-                (bvid,),
-            )
+            cursor.execute("SELECT * FROM videos WHERE bvid = %s", (bvid,))
             row = cursor.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="视频不存在")
+
+            columns = [column[0] for column in cursor.description]
+            video = dict(zip(columns, row))
+
+            cursor.execute(
+                "SELECT up_name FROM up_info WHERE mid = %s",
+                (video.get("mid", 0),),
+            )
+            up_row = cursor.fetchone()
 
             cursor.execute(
                 "SELECT tag FROM video_tags WHERE bvid = %s",
@@ -271,23 +437,106 @@ def get_video(bvid: str):
     finally:
         connection.close()
 
-    published_at = row[9]
-    if hasattr(published_at, "strftime"):
-        published_at = published_at.strftime("%Y-%m-%d %H:%M:%S")
+    video = {key: serialize_value(value) for key, value in video.items()}
+    video["up_name"] = up_row[0] if up_row else ""
+    video["tags"] = tags
+    return video
 
-    return {
-        "bvid": row[0],
-        "title": row[1],
-        "description": row[2],
-        "up_name": row[3],
-        "partition": row[4],
-        "cover_url": row[5],
-        "view_count": row[6],
-        "like_count": row[7],
-        "favorite_count": row[8],
-        "published_at": str(published_at),
-        "tags": tags,
-    }
+
+@router.get("/videos/{bvid}/comments")
+def get_video_comments(
+    bvid: str,
+    cursor: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM comments_clean
+                WHERE bvid = %s AND rpid > %s
+                ORDER BY rpid
+                LIMIT %s
+                """,
+                (bvid, cursor, limit),
+            )
+            rows = cur.fetchall()
+            columns = [column[0] for column in cur.description]
+    finally:
+        connection.close()
+
+    comments = [
+        {
+            column: serialize_value(value)
+            for column, value in zip(columns, row)
+        }
+        for row in rows
+    ]
+    next_cursor = comments[-1]["rpid"] if len(comments) == limit else None
+    return {"items": comments, "next_cursor": next_cursor}
+
+
+@router.get("/videos/{bvid}/danmaku")
+def get_video_danmaku(
+    bvid: str,
+    cursor: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM danmaku_clean
+                WHERE bvid = %s AND id > %s
+                ORDER BY id
+                LIMIT %s
+                """,
+                (bvid, cursor, limit),
+            )
+            rows = cur.fetchall()
+            columns = [column[0] for column in cur.description]
+    finally:
+        connection.close()
+
+    danmaku = [
+        {
+            column: serialize_value(value)
+            for column, value in zip(columns, row)
+        }
+        for row in rows
+    ]
+    next_cursor = danmaku[-1]["id"] if len(danmaku) == limit else None
+    return {"items": danmaku, "next_cursor": next_cursor}
+
+
+@router.get("/videos/{bvid}/subtitles")
+def get_video_subtitles(bvid: str):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM subtitles
+                WHERE bvid = %s
+                ORDER BY cid, page, start_time
+                """,
+                (bvid,),
+            )
+            rows = cur.fetchall()
+            columns = [column[0] for column in cur.description]
+    finally:
+        connection.close()
+
+    subtitles = [
+        {
+            column: serialize_value(value)
+            for column, value in zip(columns, row)
+        }
+        for row in rows
+    ]
+    return {"items": subtitles}
 
 
 @router.get("/videos/{bvid}/analysis")

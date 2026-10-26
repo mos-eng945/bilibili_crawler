@@ -50,6 +50,10 @@ class ProfileUpdate(BaseModel):
     avatar: str = Field(min_length=1, max_length=512)
 
 
+class FavoriteRequest(BaseModel):
+    bvid: str = Field(min_length=1, max_length=32)
+
+
 class UserOut(BaseModel):
     username: str
     avatar: str

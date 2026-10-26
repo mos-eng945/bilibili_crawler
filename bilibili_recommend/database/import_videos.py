@@ -10,7 +10,6 @@ from db import get_connection
 
 VIDEO_FIELDS = [
     "bvid",
-    "aid",
     "title",
     "description",
     "mid",
@@ -73,7 +72,6 @@ def normalize_list_row(row):
 
     video = {
         "bvid": bvid,
-        "aid": to_int(row.get("aid")),
         "title": row.get("title") or "",
         "description": row.get("description") or "",
         "mid": mid,
@@ -122,7 +120,6 @@ def normalize_info_row(data):
 
     video = {
         "bvid": bvid,
-        "aid": to_int(data.get("aid")),
         "title": data.get("title") or "",
         "description": data.get("description") or "",
         "mid": mid,
