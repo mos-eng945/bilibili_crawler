@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from bilibili_api import (
+    get_up_follower_count,
     search_videos,
 )
 from config import SEARCH_OUTPUT_DIR
@@ -15,7 +16,6 @@ from crawler_common import (
     SEARCH_MAX_WORKERS,
     build_video_row,
     clean_html_text,
-    fetch_follower_count_safely,
     format_published_at,
     normalize_url,
     parse_duration_seconds,
@@ -30,6 +30,15 @@ from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 
 # 搜索接口不返回分享数，写文件时去掉这一列，避免整列 0 被当成真实数据
 OUTPUT_COLUMNS = [column for column in SEARCH_COLUMNS if column != "share_count"]
+
+
+def fetch_follower_count_safely(mid, author, cookie):
+    """请求作者粉丝数，失败时返回 0。"""
+    try:
+        return request_with_retry(get_up_follower_count, mid, cookie)
+    except RuntimeError as exc:
+        print(f"作者 {author or mid} 粉丝数获取失败：{exc}")
+        return 0
 
 
 def get_search_dir(keyword, root=None, timestamped=True, run_time=None):

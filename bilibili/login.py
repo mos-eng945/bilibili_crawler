@@ -70,15 +70,30 @@ def load_state():
     return state
 
 
-def get_cookie_header(state):
-    """把登录状态里的 cookies 拼成 HTTP 请求头需要的 Cookie 头。"""
+def get_cookie_header(state=None):
+    """把登录状态里的 cookies 拼成 HTTP 请求头需要的 Cookie 头。
+
+    未传入 state 时，自动读取本地登录状态文件。
+    """
+    if state is None:
+        state = load_state()
+
     if not state:
         raise RuntimeError("没有可用的登录状态，请先运行 login.py")
 
-    # 把 cookies 列表拼成 HTTP 请求头需要的 "name=value; name=value" 格式
-    return "; ".join(
-        f'{cookie["name"]}={cookie["value"]}' for cookie in state.get("cookies", [])
-    )
+    cookie_parts = []
+
+    for cookie in state.get("cookies", []):
+        name = cookie.get("name")
+        value = cookie.get("value")
+
+        if not name or value is None:
+            continue
+
+        cookie_parts.append(f"{name}={value}")
+
+    # HTTP Cookie 头格式：name=value; name=value
+    return "; ".join(cookie_parts)
 
 
 # =========================
@@ -109,7 +124,10 @@ def has_cookie(state):
 # 3. 联网验证 cookie
 # =========================
 def check_login_online(state):
-    """请求 nav 接口，确认 cookie 在服务端仍然有效"""
+    """请求 nav 接口，确认 cookie 在服务端仍然有效。
+
+    无法完成验证时抛出 RuntimeError，避免把未知状态当成已登录。
+    """
     if not state:
         return False
 
@@ -126,11 +144,8 @@ def check_login_online(state):
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.load(response)
-            print("登录状态验证结果验证成功")
-    except (OSError, json.JSONDecodeError):
-        # 网络异常时不强制重新登录，交给后面的流程自己判断
-        print("无法验证登录状态（网络问题），先按已登录处理")
-        return True
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("无法验证 Bilibili 登录状态，请检查网络后重试") from exc
 
     return data.get("data", {}).get("isLogin") is True
 
@@ -152,7 +167,11 @@ def login():
         print("请在浏览器中手动登录 Bilibili")
 
         while True:
-            input("登录完成后按回车...")
+            try:
+                input("登录完成后按回车...")
+            except KeyboardInterrupt:
+                print("\nctrl+c强制取消登录")
+                return
 
             # 判断登陆是否有效
             state = context.storage_state()
@@ -191,11 +210,11 @@ def ensure_login():
 # 统一命令行入口：bilibili -l
 if __name__ == "__main__":
     # load_state()
-    ensure_login()
-    # login()
+    # ensure_login()
+    login()
     # check_login_online()
     # has_cookie()
-    get_cookie_header(load_state())
+    # get_cookie_header(load_state())
 
     # with sync_playwright() as p:
     #     browser = launch_browser(p)

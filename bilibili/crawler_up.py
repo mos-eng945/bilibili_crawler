@@ -4,7 +4,9 @@ import math
 from pathlib import Path
 
 from bilibili_api import (
+    get_up_follower_count,
     get_user_videos,
+    get_video_info,
 )
 from config import UP_OUTPUT_DIR
 from crawler_common import (
@@ -12,8 +14,6 @@ from crawler_common import (
     SEARCH_DEFAULT_WORKERS,
     SEARCH_MAX_WORKERS,
     build_video_row,
-    fetch_follower_count_safely,
-    fetch_video_info_safely,
     format_published_at,
     normalize_url,
     parse_duration_seconds,
@@ -28,6 +28,24 @@ from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 
 USER_VIDEO_DEFAULT_PAGE_SIZE = 50
 USER_VIDEO_MAX_PAGE_SIZE = 50
+
+
+def fetch_video_info_safely(bvid, cookie):
+    """请求视频详情，失败时返回 None。"""
+    try:
+        return request_with_retry(get_video_info, bvid, cookie)
+    except RuntimeError as exc:
+        print(f"视频 {bvid} 详情获取失败，使用搜索结果：{exc}")
+        return None
+
+
+def fetch_follower_count_safely(mid, author, cookie):
+    """请求作者粉丝数，失败时返回 0。"""
+    try:
+        return request_with_retry(get_up_follower_count, mid, cookie)
+    except RuntimeError as exc:
+        print(f"作者 {author or mid} 粉丝数获取失败：{exc}")
+        return 0
 
 
 def get_up_dir(mid, name="", root=None, run_time=None):

@@ -12,11 +12,26 @@ from playwright.sync_api import sync_playwright
 
 from login import get_cookie_header, launch_browser, load_state
 
+"""
+前提: `ai不许改我这段`
+
+url对象: urllib.parse.urlparse() 返回的对象，包含 scheme, netloc, path, params, query, fragment 等属性。split不含params
+
+httpclient对象: 手动创建的connection连接对象后，调用request()方法发送请求，getresponse()方法获取响应对象，read()方法读取响应体字节。
+
+path对象: pathlib.Path() 返回的对象，包含 name , stem, suffix ,parent ,path等属性。stem是文件名不带后缀，suffix是文件后缀名, path是完整路径,parent是父目录。
+
+mixin_key: Bilibili WBI 签名使用的混合密钥用于签名。
+
+
+"""
+
+
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
 REQUEST_TIMEOUT_SECONDS = 20
 REQUEST_RETRY_ATTEMPTS = 2
-_THREAD_LOCAL = threading.local()
+
 
 # Bilibili WBI 签名使用的字符重排表
 MIXIN_KEY_ENC_TAB = [
@@ -86,11 +101,15 @@ MIXIN_KEY_ENC_TAB = [
     52,
 ]
 
+_THREAD_LOCAL = (
+    threading.local()
+)  # 线程本地存储,保证每个线程都有自己的连接对象，避免多线程环境下的连接冲突
+
 
 def _close_thread_connection():
     """关闭当前线程缓存的 HTTP 连接。"""
-    # _THREAD_LOCAL 是 threading.local()，每个线程各存一份 connection。
-    # 可能还没存过，所以用 getattr 取，取不到按 None 处理。
+
+    # 没存过，所以用 getattr 取，取不到按 None 处理。
     connection = getattr(_THREAD_LOCAL, "connection", None)
 
     if connection is not None:
@@ -122,7 +141,7 @@ def _get_thread_connection(parsed_url):
 
 
 def _request(url, cookie, accept="application/json, text/plain, */*"):
-    """请求 Bilibili 接口，返回 (HTTP 状态码, 原始响应字节)。"""
+    """请求 Bilibili 接口，返回 (status code, 响应体原始字节)。"""
     parsed_url = urllib.parse.urlsplit(url)
     path = parsed_url.path or "/"
 
@@ -134,7 +153,7 @@ def _request(url, cookie, accept="application/json, text/plain, */*"):
         "User-Agent": USER_AGENT,
         "Referer": "https://www.bilibili.com/",
         "Accept": accept,
-        "Connection": "keep-alive",  # 不要断开连接
+        "Connection": "keep-alive",  # 不要断开连接,保持复用
     }
 
     for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
@@ -143,7 +162,7 @@ def _request(url, cookie, accept="application/json, text/plain, */*"):
         try:
             connection.request("GET", path, headers=headers)
             response = connection.getresponse()
-            body = response.read()
+            response_body = response.read()
             status = response.status
         except (OSError, http.client.HTTPException) as exc:
             _close_thread_connection()
@@ -154,23 +173,23 @@ def _request(url, cookie, accept="application/json, text/plain, */*"):
             continue
 
         if status >= 400:
-            error_body = body.decode("utf-8", errors="replace")
+            error_body = response_body.decode("utf-8", errors="replace")
             raise RuntimeError(f"请求失败：HTTP {status}\n{error_body}")
 
-        return status, body
+        return status, response_body
 
     raise RuntimeError(f"请求失败：{url}")
 
 
 def request_json(url, cookie) -> dict:  # pyright: ignore[reportReturnType]
-    """请求 Bilibili JSON 接口，复用连接并检查业务错误码。"""
-    _, body = _request(url, cookie)
+    """json.loads() 会自动解析byte，返回 data 字段的字典。"""
+    status, response_body = _request(url, cookie)
 
     try:
-        data = json.loads(body)
+        data = json.loads(response_body)
     except (TypeError, json.JSONDecodeError) as exc:
         _close_thread_connection()
-        raise RuntimeError(f"请求或解析失败：{url}") from exc
+        raise RuntimeError(f"请求或解析失败：HTTP {status} {url}") from exc
 
     if data.get("code") != 0:
         raise RuntimeError(
@@ -182,27 +201,27 @@ def request_json(url, cookie) -> dict:  # pyright: ignore[reportReturnType]
 
 
 def request_bytes(url, cookie, accept="*/*"):
-    """请求二进制接口，返回原始响应字节；HTTP 304 视为无数据。"""
-    status, body = _request(url, cookie, accept=accept)
+    """_request返回原始响应字节；HTTP 304 视为无数据。"""
+    status, response_body = _request(url, cookie, accept=accept)
 
     if status == 304:
         return b""
 
-    return body
+    return response_body
 
 
 def get_wbi_mixin_key(cookie):
-    """生成mixin_key，用于 WBI 签名。"""
+    """生成32位mixin_key，用于 WBI 签名。"""
     nav = request_json(f"{API_BASE}/x/web-interface/nav", cookie)
     img_url = nav.get("wbi_img", {}).get("img_url", "")
     sub_url = nav.get("wbi_img", {}).get("sub_url", "")
-    # img_url = "https://i0.hdslb.com/bfs/wbi/abc123.png"
-    # path()获得一个path对象  urllib.parse.urlparse(img_url).path解析url并获得路径部分/bfs/wbi/abc123.png     path对象的stem属性获得文件名不带后缀 abc123
+
+    # urllib.parse.urlparse(img_url).path解析url并获得路径部分/bfs/wbi/abc123.png     path对象的stem属性获得文件名不带后缀 abc123
     img_key = Path(urllib.parse.urlparse(img_url).path).stem
     sub_key = Path(urllib.parse.urlparse(sub_url).path).stem
 
     if not img_key or not sub_key:
-        raise RuntimeError("无法取得 WBI 密钥，登录状态可能无效")
+        raise RuntimeError("无法取得 WBI 密钥，登录状态无效")
 
     raw_key = img_key + sub_key
     # 用重排表获得mixin_key,然后取前32位
@@ -218,7 +237,9 @@ def sign_wbi_params(params, mixin_key):
 
 
 def build_url(path, params):
-    """把接口路径和参数拼成可直接访问的完整 URL。"""
+    """把接口路径和参数(urlencode)拼成可直接访问的完整 URL。"""
+    if not params:
+        return f"{API_BASE}{path}"
     query = urllib.parse.urlencode(params)
     return f"{API_BASE}{path}?{query}"
 
@@ -517,11 +538,19 @@ def fetch_danmaku_segment(oid, aid, segment_index, cookie, mixin_key):
 
 
 def open_in_browser(url=None, state=None, headless=False):
-    if state is None:
-        state = load_state()
+    """用 Playwright 打开接口地址。
+     默认带cookie登录状态，方便调试接口返回的 JSON 数据。
+    参数：
+        url: 要打开的完整 URL，若为 None 则使用 build_url(...) 构建。
+        state: Playwright 的 storage_state.json 内容，若为 None 则从本地加载。
+        headless: 是否无头模式运行浏览器，默认 False。
+    """
 
     if not url:
         raise ValueError(f"URL 不能为空，请先调用 build_url(...)")
+
+    if state is None:
+        state = load_state()
 
     print("浏览器前往:", url)
 
@@ -539,13 +568,15 @@ def open_in_browser(url=None, state=None, headless=False):
 
 
 if __name__ == "__main__":
-    # print("获取 WBI 混合密钥:" + get_wbi_mixin_key(get_cookie_header(load_state())))
+    cookie = get_cookie_header()
+    # open_in_browser(build_url("/x/web-interface/nav", {}))
+    # print("获取 WBI 混合密钥:" + get_wbi_mixin_key(cookie))
 
     # print(
     #     "签名参数:",
     #     sign_wbi_params(
     #         {"bvid": "BV1UT42167xb", "page": 1},
-    #         get_wbi_mixin_key(get_cookie_header(load_state())),
+    #         get_wbi_mixin_key(cookie),
     #     ),
     # )
 
@@ -553,17 +584,17 @@ if __name__ == "__main__":
 
     # open_in_browser(build_url("/x/relation/stat", {"vmid": "2043250564"}))
 
-    # open_in_browser(
-    #     build_wbi_url(
-    #         "/x/space/wbi/arc/search",
-    #         {
-    #             "mid": "2043250564",
-    #             "order": "click",
-    #             "ps": 50,
-    #         },
-    #         get_wbi_mixin_key(get_cookie_header(load_state())),
-    #     )
-    # )
+    open_in_browser(
+        build_wbi_url(
+            "/x/space/wbi/arc/search",
+            {
+                "mid": "2043250564",
+                "order": "click",
+                "ps": 50,
+            },
+            get_wbi_mixin_key(cookie),
+        )
+    )
 
     # open_in_browser(
     #     build_url(
@@ -582,20 +613,20 @@ if __name__ == "__main__":
     #             "page": 1,
     #             "page_size": 50,
     #         },
-    #         get_wbi_mixin_key(get_cookie_header(load_state())),
+    #         get_wbi_mixin_key(cookie),
     #     )
     # )
 
-    open_in_browser(
-        build_wbi_url(
-            "/x/v2/reply/wbi/main",
-            {
-                "oid": "1706416465",
-                "offset": "CAESEDE4MzQ2MjI3MDAyMTE2MDgaADIDCLQb",
-                "type": 1,
-                "mode": 2,
-                "ps": 30,
-            },
-            get_wbi_mixin_key(get_cookie_header(load_state())),
-        )
-    )
+    # open_in_browser(
+    #     build_wbi_url(
+    #         "/x/v2/reply/wbi/main",
+    #         {
+    #             "oid": "1706416465",
+    #             "offset": "CAESEDE4MzQ2MjI3MDAyMTE2MDgaADIDCLQb",
+    #             "type": 1,
+    #             "mode": 2,
+    #             "ps": 30,
+    #         },
+    #         get_wbi_mixin_key(cookie),
+    #     )
+    # )

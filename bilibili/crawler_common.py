@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
-from bilibili_api import get_up_follower_count, get_video_info
-
 T = TypeVar("T")
 
 SEARCH_DEFAULT_WORKERS = 2
@@ -27,6 +25,7 @@ SEARCH_RETRY_DELAY_SECONDS = 1
 CHINA_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _LOG_LOCK = threading.Lock()
 _LOG_CONTEXT = threading.local()
+
 SEARCH_COLUMNS = [
     "bvid",
     "title",
@@ -46,6 +45,8 @@ SEARCH_COLUMNS = [
     "danmaku_count",
 ]
 
+# 日志
+
 
 def set_log_prefix(prefix):
     """设置当前线程的日志前缀。"""
@@ -64,10 +65,154 @@ def log(message):
 
     with _LOG_LOCK:
         for line in lines:
-            text = f"[{prefix}] {line}" if prefix else line
+            text = line
+            if prefix:
+                text = f"[{prefix}] {line}"
             print(text, flush=True)
 
 
+# 文本清理
+
+
+def clean_html_text(value):
+    """移除搜索结果标题中的高亮标签。"""
+    text = re.sub(r"<[^>]+>", "", str(value or ""))
+    return html.unescape(text).strip()
+
+
+def normalize_url(value):
+    """把 B 站常见的协议相对 URL 转成 HTTPS。"""
+    url = str(value or "").strip()
+
+    if url.startswith("//"):
+        return f"https:{url}"
+
+    if url.startswith("http://"):
+        return "https://" + url.removeprefix("http://")
+
+    return url
+
+
+_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def safe_filename(value, max_length=None):
+    """移除 Windows 文件名不允许的字符。"""
+    name = _ILLEGAL_CHARS.sub("_", str(value)).rstrip(" .")
+
+    if max_length is not None and len(name) > max_length:
+        name = name[:max_length].rstrip(" .")
+
+    return name
+
+
+# 时间处理
+
+
+def parse_duration_seconds(value):
+    """把秒数、分:秒或时:分:秒转换成整数秒。
+
+    示例：
+        "90" -> 90
+        "1:30" -> 90
+        "1:02:03" -> 3723
+
+    无法解析、格式错误或包含负数时返回 0。
+    """
+    if isinstance(value, (int, float)):
+        seconds = int(value)
+        if seconds < 0:
+            return 0
+        return seconds
+
+    text = str(value or "").strip()
+
+    if not text:
+        return 0
+
+    raw_parts = text.split(":")
+    if not 1 <= len(raw_parts) <= 3:
+        return 0
+
+    parts = []
+    for raw_part in raw_parts:
+        try:
+            part = int(raw_part)
+        except ValueError:
+            return 0
+
+        if part < 0:
+            return 0
+
+        parts.append(part)
+
+    if len(parts) == 1:
+        return parts[0]
+
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return minutes * 60 + seconds
+
+    hours, minutes, seconds = parts
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _timestamp_to_china_datetime(timestamp):
+    """把秒级时间戳转换成中国时区的时间，转换失败时返回 None。
+
+    示例：
+        0 -> datetime(1970, 1, 1, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        "bad" -> None
+    """
+    try:
+        return datetime.fromtimestamp(int(timestamp), tz=CHINA_TIMEZONE)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def format_published_at(timestamp):
+    """把秒级时间戳转换成中国时区的 ISO 时间。
+
+    示例：
+        0 -> "1970-01-01T08:00:00+08:00"
+    """
+    date_time = _timestamp_to_china_datetime(timestamp)
+    if date_time is None:
+        return ""
+
+    return date_time.isoformat()
+
+
+def format_china_time(timestamp):
+    """把秒级时间戳转换成中国时区的可读时间。
+
+    示例：
+        0 -> "1970-01-01 08:00:00"
+    """
+    date_time = _timestamp_to_china_datetime(timestamp)
+    if date_time is None:
+        return ""
+
+    return date_time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_milliseconds(milliseconds):
+    """把毫秒偏移转换成 HH:MM:SS。
+
+    示例：
+        3723000 -> "01:02:03"
+    """
+    try:
+        total_seconds = max(0, int(milliseconds)) // 1000
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+# B 站数据映射
 # 视频分区：接口只回 tid 编号、tname 长期为空，名字本地维护。
 # 名字直接取自官方分区树 x/v2/region/index（tid -> 分区名）。
 ZONE_NAMES = {
@@ -242,103 +387,6 @@ def zone_name(tid):
     return ZONE_NAMES.get(tid, "")
 
 
-def clean_html_text(value):
-    """移除搜索结果标题中的高亮标签。"""
-    text = re.sub(r"<[^>]+>", "", str(value or ""))
-    return html.unescape(text).strip()
-
-
-def normalize_url(value):
-    """把 B 站常见的协议相对 URL 转成 HTTPS。"""
-    url = str(value or "").strip()
-
-    if url.startswith("//"):
-        return f"https:{url}"
-
-    if url.startswith("http://"):
-        return f"https://{url[7:]}"
-
-    return url
-
-
-def parse_duration_seconds(value):
-    """把分:秒或秒数转换成整数秒。"""
-    if isinstance(value, (int, float)):
-        return max(0, int(value))
-
-    text = str(value or "").strip()
-
-    if not text:
-        return 0
-
-    try:
-        parts = [int(part) for part in text.split(":")]
-    except ValueError:
-        return 0
-
-    if not 1 <= len(parts) <= 3:
-        return 0
-
-    seconds = 0
-
-    for part in parts:
-        seconds = seconds * 60 + max(0, part)
-
-    return seconds
-
-
-def format_published_at(timestamp):
-    """把秒级时间戳转换成中国时区的 ISO 时间。"""
-    try:
-        return datetime.fromtimestamp(
-            int(timestamp),
-            tz=CHINA_TIMEZONE,
-        ).isoformat()
-    except (TypeError, ValueError, OSError, OverflowError):
-        return ""
-
-
-def format_china_time(timestamp):
-    """把秒级时间戳转换成中国时区的可读时间。"""
-    try:
-        return datetime.fromtimestamp(
-            int(timestamp),
-            tz=CHINA_TIMEZONE,
-        ).strftime("%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError, OSError, OverflowError):
-        return ""
-
-
-def format_milliseconds(milliseconds):
-    """把毫秒偏移转换成 HH:MM:SS。"""
-    try:
-        total_seconds = max(0, int(milliseconds)) // 1000
-    except (TypeError, ValueError):
-        return ""
-
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
-def request_with_retry(
-    function: Callable[..., T],
-    *args: Any,
-    **kwargs: Any,
-) -> T:
-    """请求失败时短暂等待并重试。"""
-    for attempt in range(1, SEARCH_RETRY_ATTEMPTS + 1):
-        try:
-            return function(*args, **kwargs)
-        except RuntimeError:
-            if attempt == SEARCH_RETRY_ATTEMPTS:
-                raise
-
-            time.sleep(SEARCH_RETRY_DELAY_SECONDS * attempt)
-
-    raise RuntimeError("请求重试失败")
-
-
 def build_video_row(
     *,
     bvid,
@@ -379,34 +427,40 @@ def build_video_row(
     }
 
 
-_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
-def safe_filename(value, max_length=None):
-    """移除 Windows 文件名不允许的字符。"""
-    name = _ILLEGAL_CHARS.sub("_", str(value)).rstrip(" .")
-
-    if max_length is not None and len(name) > max_length:
-        name = name[:max_length].rstrip(" .")
-
-    return name
+# 路径与文件
 
 
 def run_timestamp():
-    """返回用于目录和文件名的运行时间。"""
+    """返回当前本地时间戳，格式为 YYYYMMDD_HHMMSS，用于标识每次运行。
+
+    示例：2026-10-28 14:35:07 -> "20261028_143507"
+    """
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def timestamped_path(directory, prefix, count, suffix=".csv"):
-    """生成带运行时间的输出文件路径。"""
+    """生成带运行时间的输出文件路径。
+
+    格式：{directory}/{prefix}_{YYYYMMDD_HHMMSS}_{count}{suffix}
+    示例："output"、"video"、12 -> "output/video_20261028_143507_12.csv"
+    """
     return Path(directory) / f"{prefix}_{run_timestamp()}_{count}{suffix}"
 
 
 def write_csv(path, columns, rows, append=False):
-    """按固定列顺序写入 CSV。"""
+    """按固定列顺序写入 CSV。
+
+    append=True 表示追加模式，append=False 表示写入模式。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = "a" if append else "w"
-    write_header = not append or not path.exists() or path.stat().st_size == 0
+
+    mode = "w"
+    if append:
+        mode = "a"
+
+    write_header = True
+    if append and path.exists() and path.stat().st_size > 0:
+        write_header = False
 
     with open(path, mode, newline="", encoding="utf-8-sig") as file:
         # 行里可能带未列出的字段（如搜索结果没有分享数），按 columns 写即可
@@ -432,63 +486,60 @@ def write_json(path, data):
     return path
 
 
+# 并发任务与请求重试
+
+
 def run_concurrently(function, values, workers, label, on_progress=None):
-    """按配置并发或顺序执行任务，并按输入顺序返回结果。"""
+    """按配置并发或顺序执行任务，并按输入顺序返回结果,返回值为function()的返回值。
+
+    未提供 on_progress 时，每完成 10 个任务及全部完成时打印进度。
+    """
     total = len(values)
 
     if total == 0:
         return []
 
-    worker_count = min(max(1, int(workers)), total)
+    requested_workers = int(workers)
+    if requested_workers < 1:
+        requested_workers = 1
 
-    if worker_count == 1:
-        results = []
+    worker_count = min(requested_workers, total)
 
-        for value in values:
-            results.append(function(value))
-            completed = len(results)
-
-            if on_progress is not None:
-                on_progress(completed, total)
-            elif completed == total or completed % 5 == 0:
-                print(f"{label}进度：{completed}/{total}")
-
-        return results
+    results = [None] * total
+    future_to_index = {}
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(function, value): index
-            for index, value in enumerate(values)
-        }
-        results = [None] * total
-        completed = 0
+        for index, value in enumerate(values):
+            future = executor.submit(function, value)
+            future_to_index[future] = index
 
-        for future in as_completed(futures):
-            index = futures[future]
+        completed = 0
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
             results[index] = future.result()
             completed += 1
 
             if on_progress is not None:
                 on_progress(completed, total)
-            elif completed == total or completed % 5 == 0:
+            elif completed == total or completed % 10 == 0:
                 print(f"{label}进度：{completed}/{total}")
 
     return results
 
 
-def fetch_video_info_safely(bvid, cookie):
-    """请求视频详情，失败时返回 None。"""
-    try:
-        return request_with_retry(get_video_info, bvid, cookie)
-    except RuntimeError as exc:
-        print(f"视频 {bvid} 详情获取失败，使用搜索结果：{exc}")
-        return None
+def request_with_retry(
+    function: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """请求失败时短暂等待并重试。"""
+    for attempt in range(1, SEARCH_RETRY_ATTEMPTS + 1):
+        try:
+            return function(*args, **kwargs)
+        except RuntimeError:
+            if attempt == SEARCH_RETRY_ATTEMPTS:
+                raise
 
+            time.sleep(SEARCH_RETRY_DELAY_SECONDS * attempt)
 
-def fetch_follower_count_safely(mid, author, cookie):
-    """请求作者粉丝数，失败时返回 0。"""
-    try:
-        return request_with_retry(get_up_follower_count, mid, cookie)
-    except RuntimeError as exc:
-        print(f"作者 {author or mid} 粉丝数获取失败：{exc}")
-        return 0
+    raise RuntimeError("请求重试失败")

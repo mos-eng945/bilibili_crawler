@@ -2,6 +2,7 @@
 .vscode/
 .pytest_cache/
 AGENTS.md
+.playwright-cli/
 
 # OS metadata
 .DS_Store
