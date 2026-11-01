@@ -5,14 +5,13 @@ from pathlib import Path
 
 from config import OUTPUT_DIR
 
-
 SOURCE_NAMES = ("hot", "up", "search")
 SOURCE_DIRECTORIES = {
     "hot": "热搜",
     "up": "UP主",
     "search": "关键词搜索",
 }
-DETAIL_DEFAULT_WORKERS = 2
+DETAIL_DEFAULT_WORKERS = 3
 
 
 def read_csv_bvids(path):
@@ -35,26 +34,66 @@ def read_csv_bvids(path):
 
 
 def get_all_bvids(output_root=None):
-    """遍历热搜、UP 主和搜索 CSV，返回去重后的 BVID 列表。"""
-    root = Path(output_root) if output_root else OUTPUT_DIR
+    """返回热搜、UP 主和搜索 CSV 中的 BVID。"""
+    root = OUTPUT_DIR
+
+    if output_root:
+        root = Path(output_root)
+
     bvids = []
-    seen = set()
 
-    for source in SOURCE_NAMES:
-        source_root = root / SOURCE_DIRECTORIES[source]
+    for source_name in SOURCE_NAMES:
+        source_dir = root / SOURCE_DIRECTORIES[source_name]
 
-        if not source_root.is_dir():
+        if not source_dir.is_dir():
             continue
 
-        for path in sorted(source_root.rglob("*.csv")):
-            for bvid in read_csv_bvids(path):
-                if bvid in seen:
-                    continue
-
-                seen.add(bvid)
-                bvids.append(bvid)
+        for path in sorted(source_dir.rglob("*.csv")):
+            bvids.extend(read_csv_bvids(path))
 
     return bvids
+
+
+def _crawl_one_bvid(
+    bvid,
+    session_state,
+    output_root,
+    page_range,
+    language,
+):
+    """采集单个 BVID，失败时返回错误信息。"""
+    from crawler_comment import CommentCrawler
+    from crawler_common import log
+    from crawler_dm import DanmakuCrawler
+    from crawler_info import VideoInfoCrawler
+    from crawler_subtitle import SubtitleCrawler
+    from session import VideoSession
+
+    log(f"{bvid} 全部采集")
+
+    try:
+        video_session = VideoSession(
+            bvid,
+            session_state,
+            output_root=output_root,
+        )
+        VideoInfoCrawler(video_session).run()
+        SubtitleCrawler(
+            video_session,
+            page_range=page_range,
+            language=language,
+        ).run()
+        DanmakuCrawler(
+            video_session,
+            page_range=page_range,
+        ).run()
+        CommentCrawler(video_session).run()
+    except Exception as exc:
+        log(f"{bvid} 精爬失败：{exc}")
+        return bvid, str(exc)
+    else:
+        log(f"{bvid} 精爬完成")
+        return None
 
 
 def crawl_bvids(
@@ -66,7 +105,6 @@ def crawl_bvids(
     language=None,
 ):
     """并发采集多个 BVID 的信息、字幕、弹幕和一级评论。"""
-    from crawler_comment import CommentCrawler
     from crawler_common import (
         SEARCH_MAX_WORKERS,
         clear_log_prefix,
@@ -74,85 +112,84 @@ def crawl_bvids(
         run_concurrently,
         set_log_prefix,
     )
-    from crawler_dm import DanmakuCrawler
-    from crawler_info import VideoInfoCrawler
-    from crawler_subtitle import SubtitleCrawler
-    from session import VideoSession
 
-    ordered_bvids = list(
-        dict.fromkeys(
-            str(bvid).strip()
-            for bvid in bvids
-            if str(bvid).strip()
-        )
-    )
+    ordered_bvids = []
+    seen_bvids = set()
+
+    for bvid in bvids:
+        normalized_bvid = str(bvid).strip()
+
+        if not normalized_bvid:
+            continue
+
+        if normalized_bvid in seen_bvids:
+            continue
+
+        seen_bvids.add(normalized_bvid)
+        ordered_bvids.append(normalized_bvid)
 
     if not ordered_bvids:
         return []
 
-    state = getattr(session, "_state", None)
+    session_state = getattr(session, "_state", None)
 
     if workers is None:
         workers = DETAIL_DEFAULT_WORKERS
 
-    worker_count = min(
-        max(1, int(workers)),
-        SEARCH_MAX_WORKERS,
-    )
-    labels = {
-        bvid: f"{index:02d}/{len(ordered_bvids)} {bvid}"
-        for index, bvid in enumerate(ordered_bvids, start=1)
-    }
+    worker_count = int(workers)
+
+    if worker_count < 1:
+        worker_count = 1
+
+    if worker_count > SEARCH_MAX_WORKERS:
+        worker_count = SEARCH_MAX_WORKERS
 
     def report_progress(completed, total):
-        log(f"精爬进度：{completed}/{total}")
+        log(f"爬取进度：{completed}/{total}")
         log(f"::PROGRESS::{completed}/{total}")
 
-    def crawl_one(bvid):
-        set_log_prefix(labels[bvid])
-        log("精爬开始")
+    tasks = []
+
+    for index, bvid in enumerate(ordered_bvids, start=1):
+        tasks.append((index, bvid))
+
+    def crawl_one(task):
+        index, bvid = task
+        set_log_prefix(f"{index:02d}/{len(ordered_bvids)} {bvid}")
 
         try:
-            video_session = VideoSession(
+            return _crawl_one_bvid(
                 bvid,
-                state,
-                output_root=output_root,
+                session_state,
+                output_root,
+                page_range,
+                language,
             )
-            VideoInfoCrawler(video_session).run()
-            SubtitleCrawler(
-                video_session,
-                page_range=page_range,
-                language=language,
-            ).run()
-            DanmakuCrawler(
-                video_session,
-                page_range=page_range,
-            ).run()
-            CommentCrawler(video_session).run()
-        except Exception as exc:
-            log(f"精爬失败：{exc}")
-            return bvid, str(exc)
-        else:
-            log("精爬完成")
-            return None
         finally:
             clear_log_prefix()
 
     log(f"::PROGRESS_START::{len(ordered_bvids)}")
     results = run_concurrently(
         crawl_one,
-        ordered_bvids,
+        tasks,
         worker_count,
         "精爬",
         on_progress=report_progress,
+        ordered_logs=True,
     )
-    failures = [result for result in results if result is not None]
+    failures = []
+
+    for result in results:
+        if result is not None:
+            failures.append(result)
+
+    success_count = len(ordered_bvids) - len(failures)
+
     print(
-        f"精爬汇总：成功 {len(ordered_bvids) - len(failures)} 个，"
+        f"精爬汇总：成功 {success_count} 个，"
         f"失败 {len(failures)} 个，并发 {worker_count}"
     )
     log(
-        f"::PROGRESS_DONE::{len(ordered_bvids) - len(failures)}/"
-        f"{len(ordered_bvids)}",
+        f"::PROGRESS_DONE::{success_count}/{len(ordered_bvids)}",
     )
     return failures

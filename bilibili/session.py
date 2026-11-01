@@ -12,12 +12,12 @@ from bilibili_api import (
     get_wbi_mixin_key,
 )
 from config import VIDEO_OUTPUT_DIR
-from crawler_common import safe_filename
+from crawler_common import request_with_retry, safe_filename
 from login import get_cookie_header, load_state
 
 
 def get_video_dir(video_info, output_root=None):
-    """生成视频输出目录：`video/{BV号}_{UP主}/`。"""
+    """单生成视频输出目录：`video/{BV号}_{UP主}/`。"""
     up_name = safe_filename(
         video_info.get("owner", {}).get("name") or "unknown",
         max_length=30,
@@ -63,7 +63,10 @@ class Session:
     def mixin_key(self):
         # 第一次访问才请求 nav 接口计算密钥，之后直接用缓存
         if self._mixin_key is None:
-            self._mixin_key = get_wbi_mixin_key(self.cookie)
+            self._mixin_key = request_with_retry(
+                get_wbi_mixin_key,
+                self.cookie,
+            )
 
         return self._mixin_key
 
@@ -100,7 +103,8 @@ class VideoSession(Session):
     def video_info(self):
         """视频主体信息，为空时直接报错。"""
         if self._video_info is None:
-            self._video_info = get_video_info(
+            self._video_info = request_with_retry(
+                get_video_info,
                 self.bvid,
                 self.cookie,
             )
@@ -120,7 +124,8 @@ class VideoSession(Session):
             mid = owner.get("mid")
 
             if mid:
-                self._up_follower_count = get_up_follower_count(
+                self._up_follower_count = request_with_retry(
+                    get_up_follower_count,
                     mid,
                     self.cookie,
                 )
@@ -166,7 +171,13 @@ class VideoSession(Session):
             )
 
         # 按分 P 的 page 字段过滤，只保留落在 [start, end] 内的项
-        selected = [page for page in pages if start <= page.get("page", 0) <= end]
+        selected = []
+
+        for page in pages:
+            page_number = page.get("page", 0)
+
+            if start <= page_number <= end:
+                selected.append(page)
 
         if not selected:
             raise RuntimeError(f"视频 {self.bvid} 没有分 P {start}-{end}")

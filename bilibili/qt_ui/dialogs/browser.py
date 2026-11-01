@@ -210,26 +210,30 @@ class DataBrowserDialog(QDialog):
 
     def _populate_browser(self):
         if self.current_dir.exists():
-            paths = sorted(
-                (
-                    path
-                    for path in self.current_dir.iterdir()
-                    if path.name not in {".git", "__pycache__"}
-                    and not is_subtitle_json(path)
-                ),
-                key=self._browser_sort_key,
-            )
+            paths = []
+
+            for path in self.current_dir.iterdir():
+                if path.name in {".git", "__pycache__"}:
+                    continue
+
+                if is_subtitle_json(path):
+                    continue
+
+                paths.append(path)
+
+            paths.sort(key=self._browser_sort_key)
         else:
             paths = []
 
         self.browser_entries = paths
         self.browser_table.setRowCount(len(paths))
         relative_path = self.current_dir.relative_to(self.root_dir)
-        display_path = (
-            "output"
-            if not relative_path.parts
-            else f"output/{relative_path.as_posix()}"
-        )
+
+        if relative_path.parts:
+            display_path = f"output/{relative_path.as_posix()}"
+        else:
+            display_path = "output"
+
         self.path_label.setText(display_path)
         self.parent_button.setEnabled(self.current_dir != self.root_dir)
 
@@ -315,7 +319,11 @@ class DataBrowserDialog(QDialog):
             return
 
         item = self.browser_table.item(row, 0)
-        path_text = item.data(Qt.ItemDataRole.UserRole) if item else None
+
+        if item:
+            path_text = item.data(Qt.ItemDataRole.UserRole)
+        else:
+            path_text = None
 
         if not path_text:
             return

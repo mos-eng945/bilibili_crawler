@@ -52,10 +52,13 @@ class HotSearchCrawler:
         self.page_size = page_size
         self.workers = workers
         self.with_details = bool(with_details)
-        self.detail_workers = min(
-            max(1, int(detail_workers)),
-            SEARCH_MAX_WORKERS,
-        )
+        self.detail_workers = int(detail_workers)
+
+        if self.detail_workers < 1:
+            self.detail_workers = 1
+
+        if self.detail_workers > SEARCH_MAX_WORKERS:
+            self.detail_workers = SEARCH_MAX_WORKERS
 
     def run(self):
         hot_items = request_with_retry(

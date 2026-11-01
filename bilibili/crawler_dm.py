@@ -49,12 +49,17 @@ def get_danmaku_paths(video_dir, pages, structured_output=False):
     for page_info in pages:
         page_number = page_info.get("page", 1)
         part = str(page_info.get("part") or "").strip()
-        stem = Path(part).stem if part else ""
-        base = (
-            f"danmaku_{safe_filename(stem)}"
-            if stem
-            else f"danmaku_p{page_number}"
-        )
+
+        if part:
+            stem = Path(part).stem
+        else:
+            stem = ""
+
+        if stem:
+            base = f"danmaku_{safe_filename(stem)}"
+        else:
+            base = f"danmaku_p{page_number}"
+
         name = f"{base}.csv"
 
         if name in used_names:
@@ -64,11 +69,6 @@ def get_danmaku_paths(video_dir, pages, structured_output=False):
         paths[page_number] = Path(video_dir) / name
 
     return paths
-
-
-def segment_count(duration):
-    """按每段 360 秒计算需要请求的弹幕分段数。"""
-    return math.ceil(float(duration) / DANMAKU_SEGMENT_SECONDS)
 
 
 def parse_danmaku_rows(raw, seen):
@@ -129,7 +129,7 @@ def crawl_page(session, page_info, total_pages, csv_file):
     if not duration or float(duration) <= 0:
         raise RuntimeError(f"P{page_number} 缺少有效时长，无法计算弹幕分段")
 
-    total_segments = segment_count(duration)
+    total_segments = math.ceil(float(duration) / DANMAKU_SEGMENT_SECONDS)
     seen_danmaku = set()
     saved_count = 0
     failures = 0
@@ -174,7 +174,11 @@ def crawl_page(session, page_info, total_pages, csv_file):
                 continue
 
             failures = 0
-            rows = parse_danmaku_rows(raw, seen_danmaku) if raw else []
+
+            if raw:
+                rows = parse_danmaku_rows(raw, seen_danmaku)
+            else:
+                rows = []
 
             if rows:
                 writer.writerows(rows)

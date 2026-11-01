@@ -241,15 +241,15 @@ class DataPreviewDialog(QDialog):
         if truncated:
             row_count_text += f"（仅预览前 {PREVIEW_ROW_LIMIT} 行）"
 
-        self.meta.setText(
+        meta_text = (
             f"{row_count_text} · {suffix.removeprefix('.').upper()} · "
             f"更新于 {modified_at}"
-            + (
-                f" · 关键词：{self.search_keyword}"
-                if self.search_keyword
-                else ""
-            )
         )
+
+        if self.search_keyword:
+            meta_text += f" · 关键词：{self.search_keyword}"
+
+        self.meta.setText(meta_text)
 
         display_rows = []
         full_rows = []
@@ -275,11 +275,13 @@ class DataPreviewDialog(QDialog):
 
                 full_value = str(value)
                 full_row.append(full_value)
-                display_row.append(
-                    shorten_user_hash(full_value)
-                    if raw_header in {"用户Hash", "哈希"}
-                    else full_value
-                )
+
+                if raw_header in {"用户Hash", "哈希"}:
+                    display_value = shorten_user_hash(full_value)
+                else:
+                    display_value = full_value
+
+                display_row.append(display_value)
                 sort_row.append(
                     self._preview_sort_key(raw_header, raw_value)
                 )
@@ -297,16 +299,17 @@ class DataPreviewDialog(QDialog):
             raw_headers=raw_headers,
         )
         self.table.setModel(self.preview_model)
-        self.bvid_column = (
-            self.preview_raw_headers.index("bvid")
-            if "bvid" in self.preview_raw_headers
-            else None
-        )
-        self.cover_column = (
-            self.preview_raw_headers.index("cover_url")
-            if "cover_url" in self.preview_raw_headers
-            else None
-        )
+
+        if "bvid" in self.preview_raw_headers:
+            self.bvid_column = self.preview_raw_headers.index("bvid")
+        else:
+            self.bvid_column = None
+
+        if "cover_url" in self.preview_raw_headers:
+            self.cover_column = self.preview_raw_headers.index("cover_url")
+        else:
+            self.cover_column = None
+
         self.link_delegate.link_column = self.cover_column
         self.open_video_button.setVisible(self.bvid_column is not None)
         self.table.selectionModel().currentRowChanged.connect(
@@ -314,11 +317,14 @@ class DataPreviewDialog(QDialog):
         )
         self._update_open_video_state()
         self._total_rows = len(rows)
-        self._base_row_hint = (
-            row_count_text
-            if not truncated
-            else f"{row_count_text}，完整数据请打开原始文件"
-        )
+
+        if truncated:
+            self._base_row_hint = (
+                f"{row_count_text}，完整数据请打开原始文件"
+            )
+        else:
+            self._base_row_hint = row_count_text
+
         self.row_hint.setText(self._base_row_hint)
         self.filter_edit.blockSignals(True)
         self.filter_edit.clear()
@@ -338,11 +344,12 @@ class DataPreviewDialog(QDialog):
             "简介",
             "热搜词",
         }
-        self._preferred_stretch_indexes = [
-            index
-            for index, header in enumerate(headers)
-            if header in stretch_headers
-        ]
+        self._preferred_stretch_indexes = []
+
+        for index, header in enumerate(headers):
+            if header in stretch_headers:
+                self._preferred_stretch_indexes.append(index)
+
         self._apply_column_visibility()
         self._apply_row_wrapping()
 
@@ -362,17 +369,20 @@ class DataPreviewDialog(QDialog):
             return
 
         total = self.preview_model.columnCount()
-        visible_count = min(total, TABLE_COLUMN_LIMIT) if key_only else total
+        if key_only:
+            visible_count = min(total, TABLE_COLUMN_LIMIT)
+        else:
+            visible_count = total
 
         for index in range(total):
             self.table.setColumnHidden(index, index >= visible_count)
 
         visible = set(range(visible_count))
-        stretch = [
-            index
-            for index in self._preferred_stretch_indexes
-            if index in visible
-        ]
+        stretch = []
+
+        for index in self._preferred_stretch_indexes:
+            if index in visible:
+                stretch.append(index)
 
         if not stretch and visible_count:
             stretch = [visible_count - 1]
@@ -450,7 +460,10 @@ class DataPreviewDialog(QDialog):
 
     @staticmethod
     def _preview_sort_key(header, value):
-        text = str(value if value is not None else "").strip()
+        if value is None:
+            text = ""
+        else:
+            text = str(value).strip()
 
         if not text:
             return (2, 0.0, "")
@@ -493,10 +506,16 @@ class DataPreviewDialog(QDialog):
         else:
             return raw_headers, headers, rows
 
-        ordered = [header for header in key_order if header in raw_headers]
-        ordered.extend(
-            header for header in raw_headers if header not in ordered
-        )
+        ordered = []
+
+        for header in key_order:
+            if header in raw_headers:
+                ordered.append(header)
+
+        for header in raw_headers:
+            if header not in ordered:
+                ordered.append(header)
+
         indexes = [raw_headers.index(header) for header in ordered]
 
         return (
@@ -544,7 +563,14 @@ class DataPreviewDialog(QDialog):
         }:
             return 220
 
-        return max(90, min(180, len(str(header)) * 16 + 36))
+        width = len(str(header)) * 16 + 36
+
+        if width < 90:
+            width = 90
+        if width > 180:
+            width = 180
+
+        return width
 
     def _apply_preview_column_widths(self):
         if not self._base_column_widths or self._columns_user_resized:
@@ -692,7 +718,10 @@ class DataPreviewDialog(QDialog):
             self.bvid_column,
         ).strip()
 
-        return bvid if re.fullmatch(r"BV[0-9A-Za-z]+", bvid) else ""
+        if re.fullmatch(r"BV[0-9A-Za-z]+", bvid):
+            return bvid
+
+        return ""
 
     def _show_cell_detail(self, index=None):
         if index is None or not index.isValid():
@@ -767,7 +796,13 @@ class DataPreviewDialog(QDialog):
         longest_line = max(len(line) for line in lines)
 
         if line_count <= 3 and longest_line <= 80:
-            width = min(620, max(320, longest_line * 10 + 100))
+            width = longest_line * 10 + 100
+
+            if width < 320:
+                width = 320
+            if width > 620:
+                width = 620
+
             height = max(168, 110 + line_count * 26)
             return width, height
 

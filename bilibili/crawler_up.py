@@ -226,20 +226,24 @@ class UpVideosCrawler:
             raise ValueError("UP 主 MID 必须大于 0")
 
         self.output_root = output_root
-        self.page_size = min(
-            max(1, int(page_size)),
-            USER_VIDEO_MAX_PAGE_SIZE,
-        )
-        self.workers = min(
-            max(1, int(workers)),
-            SEARCH_MAX_WORKERS,
-        )
+        self.page_size = int(page_size)
+        if self.page_size < 1:
+            self.page_size = 1
+        if self.page_size > USER_VIDEO_MAX_PAGE_SIZE:
+            self.page_size = USER_VIDEO_MAX_PAGE_SIZE
+
+        self.workers = int(workers)
+        if self.workers < 1:
+            self.workers = 1
+        if self.workers > SEARCH_MAX_WORKERS:
+            self.workers = SEARCH_MAX_WORKERS
 
         self.with_details = bool(with_details)
-        self.detail_workers = min(
-            max(1, int(detail_workers)),
-            SEARCH_MAX_WORKERS,
-        )
+        self.detail_workers = int(detail_workers)
+        if self.detail_workers < 1:
+            self.detail_workers = 1
+        if self.detail_workers > SEARCH_MAX_WORKERS:
+            self.detail_workers = SEARCH_MAX_WORKERS
 
     def crawl_details(self, bvids, output_root=None):
         """按配置并发采集 BVID 的信息、字幕、弹幕和一级评论。"""
@@ -298,7 +302,11 @@ class UpVideosCrawler:
             for item, video_info in zip(items, video_infos)
         ]
 
-        up_name = str(rows[0].get("author") or "").strip() if rows else ""
+        if rows:
+            up_name = str(rows[0].get("author") or "").strip()
+        else:
+            up_name = ""
+
         output_dir = get_up_dir(self.mid, up_name, self.output_root)
         output_dir.mkdir(parents=True, exist_ok=True)
 

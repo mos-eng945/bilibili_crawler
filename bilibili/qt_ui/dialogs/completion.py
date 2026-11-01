@@ -34,7 +34,12 @@ class CompletionDialog(QDialog):
 
     def __init__(self, task_name, path=None, parent=None):
         super().__init__(parent)
-        self.path = Path(path) if path else None
+
+        if path:
+            self.path = Path(path)
+        else:
+            self.path = None
+
         self.setObjectName("CompletionDialog")
         self.setWindowTitle("任务完成")
         self.setModal(True)
@@ -74,7 +79,12 @@ class CompletionDialog(QDialog):
         panel_layout.setContentsMargins(14, 12, 14, 12)
         panel_layout.setSpacing(5)
 
-        panel_label = QLabel("保存位置" if path else "任务状态")
+        if path:
+            panel_label_text = "保存位置"
+        else:
+            panel_label_text = "任务状态"
+
+        panel_label = QLabel(panel_label_text)
         panel_label.setObjectName("CompletionPanelLabel")
         panel_layout.addWidget(panel_label)
 
@@ -86,7 +96,12 @@ class CompletionDialog(QDialog):
         panel_value = QLabel(display_path)
         panel_value.setObjectName("CompletionPath")
         panel_value.setWordWrap(True)
-        panel_value.setToolTip(str(path) if path else "")
+        if path:
+            panel_tooltip = str(path)
+        else:
+            panel_tooltip = ""
+
+        panel_value.setToolTip(panel_tooltip)
         panel_value.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )

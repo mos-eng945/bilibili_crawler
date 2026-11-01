@@ -29,7 +29,11 @@ from crawler_common import (
 from crawler_for import DETAIL_DEFAULT_WORKERS, crawl_bvids
 
 # 搜索接口不返回分享数，写文件时去掉这一列，避免整列 0 被当成真实数据
-OUTPUT_COLUMNS = [column for column in SEARCH_COLUMNS if column != "share_count"]
+OUTPUT_COLUMNS = []
+
+for column in SEARCH_COLUMNS:
+    if column != "share_count":
+        OUTPUT_COLUMNS.append(column)
 
 
 def fetch_follower_count_safely(mid, author, cookie):
@@ -54,7 +58,11 @@ def get_search_dir(keyword, root=None, timestamped=True, run_time=None):
 
 def find_search_dir(keyword, root=None):
     """查找关键词最新的时间戳目录。"""
-    root = Path(root) if root else SEARCH_OUTPUT_DIR
+    if root:
+        root = Path(root)
+    else:
+        root = SEARCH_OUTPUT_DIR
+
     name = safe_filename(keyword, max_length=50) or "搜索"
     pattern = re.compile(rf"^{re.escape(name)}\+\d{{8}}_\d{{6}}$")
     candidates = []
@@ -168,8 +176,24 @@ def build_search_rows(items):
 
 def fill_author_follower_counts(rows, cookie, workers):
     """按作者 mid 并发补充搜索结果的粉丝数。"""
-    mids = list(dict.fromkeys(row["mid"] for row in rows if row["mid"]))
-    author_names = {row["mid"]: row["author"] for row in rows if row["mid"]}
+    mids = []
+    author_names = {}
+    seen_mids = set()
+
+    for row in rows:
+        mid = row["mid"]
+
+        if not mid:
+            continue
+
+        author_names[mid] = row["author"]
+
+        if mid in seen_mids:
+            continue
+
+        seen_mids.add(mid)
+        mids.append(mid)
+
     follower_counts = run_concurrently(
         lambda mid: fetch_follower_count_safely(
             mid,
@@ -205,21 +229,34 @@ class SearchCrawler:
         self.session = session
         self.keyword = str(keyword).strip()
         self.output_root = output_root
-        self.page = max(1, int(page))
-        self.pages = max(1, int(pages))
-        self.page_size = min(
-            max(1, int(page_size)),
-            SEARCH_MAX_PAGE_SIZE,
-        )
-        self.workers = min(
-            max(1, int(workers)),
-            SEARCH_MAX_WORKERS,
-        )
+
+        self.page = int(page)
+        if self.page < 1:
+            self.page = 1
+
+        self.pages = int(pages)
+        if self.pages < 1:
+            self.pages = 1
+
+        self.page_size = int(page_size)
+        if self.page_size < 1:
+            self.page_size = 1
+        if self.page_size > SEARCH_MAX_PAGE_SIZE:
+            self.page_size = SEARCH_MAX_PAGE_SIZE
+
+        self.workers = int(workers)
+        if self.workers < 1:
+            self.workers = 1
+        if self.workers > SEARCH_MAX_WORKERS:
+            self.workers = SEARCH_MAX_WORKERS
+
         self.with_details = bool(with_details)
-        self.detail_workers = min(
-            max(1, int(detail_workers)),
-            SEARCH_MAX_WORKERS,
-        )
+        self.detail_workers = int(detail_workers)
+        if self.detail_workers < 1:
+            self.detail_workers = 1
+        if self.detail_workers > SEARCH_MAX_WORKERS:
+            self.detail_workers = SEARCH_MAX_WORKERS
+
         self.timestamped_output = bool(timestamped_output)
         self.output_dir = None
         self.bvids = []
@@ -238,13 +275,21 @@ class SearchCrawler:
             self.workers,
         )
         rows = build_search_rows(items)
-        self.bvids = list(
-            dict.fromkeys(
-                str(row.get("bvid") or "").strip()
-                for row in rows
-                if str(row.get("bvid") or "").strip()
-            )
-        )
+        self.bvids = []
+        seen_bvids = set()
+
+        for row in rows:
+            bvid = str(row.get("bvid") or "").strip()
+
+            if not bvid:
+                continue
+
+            if bvid in seen_bvids:
+                continue
+
+            seen_bvids.add(bvid)
+            self.bvids.append(bvid)
+
         fill_author_follower_counts(
             rows,
             self.session.cookie,

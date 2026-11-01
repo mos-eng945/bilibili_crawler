@@ -17,7 +17,7 @@ from bilibili_api import (
     get_player_subtitles,
 )
 from config import DEFAULT_BVID, parse_page_range
-from crawler_common import log, safe_filename, write_json
+from crawler_common import log, request_with_retry, safe_filename, write_json
 from login import ensure_login
 from session import VideoSession
 
@@ -143,7 +143,8 @@ class SubtitleCrawler:
                 log(f"跳过 P{current_page}：没有 cid")
                 continue
 
-            subtitle_items = get_player_subtitles(
+            subtitle_items = request_with_retry(
+                get_player_subtitles,
                 bvid,
                 cid,
                 self.session.cookie,
@@ -151,11 +152,13 @@ class SubtitleCrawler:
             )
 
             if self.language:
-                subtitle_items = [
-                    item
-                    for item in subtitle_items
-                    if item.get("lan") == self.language
-                ]
+                filtered_items = []
+
+                for item in subtitle_items:
+                    if item.get("lan") == self.language:
+                        filtered_items.append(item)
+
+                subtitle_items = filtered_items
 
             if not subtitle_items:
                 log(f"P{current_page} 没有找到可下载字幕")

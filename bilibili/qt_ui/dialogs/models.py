@@ -42,11 +42,11 @@ class PreviewTableModel(QAbstractTableModel):
         self._view = list(range(len(self._display)))
         self._sort_column = None
         self._sort_order = Qt.SortOrder.AscendingOrder
-        self.numeric_columns = {
-            index
-            for index, header in enumerate(self.raw_headers)
-            if header in NUMBER_COLUMNS
-        }
+        self.numeric_columns = set()
+
+        for index, header in enumerate(self.raw_headers):
+            if header in NUMBER_COLUMNS:
+                self.numeric_columns.add(index)
 
     def rowCount(self, parent=None):
         if parent is not None and parent.isValid():
@@ -126,11 +126,18 @@ class PreviewTableModel(QAbstractTableModel):
         if not text:
             self._view = list(range(len(self._display)))
         else:
-            self._view = [
-                index
-                for index, row in enumerate(self._display)
-                if any(text in str(cell).casefold() for cell in row)
-            ]
+            self._view = []
+
+            for index, row in enumerate(self._display):
+                row_matches = False
+
+                for cell in row:
+                    if text in str(cell).casefold():
+                        row_matches = True
+                        break
+
+                if row_matches:
+                    self._view.append(index)
 
         self._apply_sort()
         self.endResetModel()
@@ -160,7 +167,11 @@ class SortableTableWidgetItem(QTableWidgetItem):
 
     def __init__(self, text="", sort_key=None):
         super().__init__(text)
-        self.sort_key = text.casefold() if sort_key is None else sort_key
+
+        if sort_key is None:
+            self.sort_key = text.casefold()
+        else:
+            self.sort_key = sort_key
 
     def __lt__(self, other):
         if not isinstance(other, SortableTableWidgetItem):
@@ -190,7 +201,13 @@ class LinkItemDelegate(QStyledItemDelegate):
         hovered = bool(
             styled.state & QStyle.StateFlag.State_MouseOver
         )
-        color = QColor("#e95482" if hovered else "#2f6feb")
+
+        if hovered:
+            color_value = "#e95482"
+        else:
+            color_value = "#2f6feb"
+
+        color = QColor(color_value)
         styled.palette.setColor(QPalette.ColorRole.Text, color)
         styled.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 

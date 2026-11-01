@@ -113,17 +113,24 @@ def _read_srt(path):
             truncated = True
             break
 
-        lines = [line for line in block.splitlines() if line.strip()]
+        lines = []
+
+        for line in block.splitlines():
+            if line.strip():
+                lines.append(line)
 
         if len(lines) < 3:
             continue
 
         match = re.match(r"(.+?)\s*-->\s*(.+)", lines[1])
-        start, end = (
-            (match.group(1).strip(), match.group(2).strip())
-            if match
-            else ("", "")
-        )
+
+        if match:
+            start = match.group(1).strip()
+            end = match.group(2).strip()
+        else:
+            start = ""
+            end = ""
+
         rows.append([len(rows) + 1, start, end, "\n".join(lines[2:])])
 
     return raw_headers, headers, rows, truncated

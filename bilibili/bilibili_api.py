@@ -30,7 +30,6 @@ mixin_key: Bilibili WBI 签名使用的混合密钥用于签名。
 API_BASE = "https://api.bilibili.com"
 USER_AGENT = "Mozilla/5.0"
 REQUEST_TIMEOUT_SECONDS = 20
-REQUEST_RETRY_ATTEMPTS = 2
 
 
 # Bilibili WBI 签名使用的字符重排表
@@ -156,29 +155,22 @@ def _request(url, cookie, accept="application/json, text/plain, */*"):
         "Connection": "keep-alive",  # 不要断开连接,保持复用
     }
 
-    for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
-        connection = _get_thread_connection(parsed_url)
+    connection = _get_thread_connection(parsed_url)
 
-        try:
-            connection.request("GET", path, headers=headers)
-            response = connection.getresponse()
-            response_body = response.read()
-            status = response.status
-        except (OSError, http.client.HTTPException) as exc:
-            _close_thread_connection()
+    try:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        response_body = response.read()
+        status = response.status
+    except (OSError, http.client.HTTPException) as exc:
+        _close_thread_connection()
+        raise RuntimeError(f"请求失败：{url}") from exc
 
-            if attempt == REQUEST_RETRY_ATTEMPTS:
-                raise RuntimeError(f"请求失败：{url}") from exc
+    if status >= 400:
+        error_body = response_body.decode("utf-8", errors="replace")
+        raise RuntimeError(f"请求失败：HTTP {status}\n{error_body}")
 
-            continue
-
-        if status >= 400:
-            error_body = response_body.decode("utf-8", errors="replace")
-            raise RuntimeError(f"请求失败：HTTP {status}\n{error_body}")
-
-        return status, response_body
-
-    raise RuntimeError(f"请求失败：{url}")
+    return status, response_body
 
 
 def request_json(url, cookie) -> dict:  # pyright: ignore[reportReturnType]
@@ -198,16 +190,6 @@ def request_json(url, cookie) -> dict:  # pyright: ignore[reportReturnType]
         )
 
     return data.get("data", {})
-
-
-def request_bytes(url, cookie, accept="*/*"):
-    """_request返回原始响应字节；HTTP 304 视为无数据。"""
-    status, response_body = _request(url, cookie, accept=accept)
-
-    if status == 304:
-        return b""
-
-    return response_body
 
 
 def get_wbi_mixin_key(cookie):
@@ -254,25 +236,23 @@ def request_wbi_json(path, params, cookie, mixin_key):
     return request_json(build_wbi_url(path, params, mixin_key), cookie)
 
 
+def get_video_pages(bvid, cookie):
+    """取得视频的所有分 P。"""
+    data = get_video_info(bvid, cookie)
+
+    return data.get("pages", [])
+
+
+def get_up_follower_count(mid, cookie):
+    """取得 UP 主的粉丝数。"""
+    query = urllib.parse.urlencode({"vmid": mid})
+    data = request_json(f"{API_BASE}/x/relation/stat?{query}", cookie)
+
+    return data.get("follower", 0)
+
+
 def get_video_info(bvid, cookie):
-    """
-    取得视频的详细信息（轻量接口）。
-
-    参数：
-        bvid: 视频 BV 号，例如 "BV1UT42167xb"。
-        cookie: 已登录的请求 Cookie 头，通常来自 Session.cookie。
-
-    返回：
-        接口 data 字段的字典，常用字段包括：
-        - bvid / aid: 视频 BV 号和 av 号
-        - title / desc: 标题和简介
-        - pubdate / duration: 发布时间戳(秒)和视频时长(秒)
-        - owner: UP 主信息，含 mid、name、face
-        - stat: 统计数据，含 view、like、coin、favorite、
-          reply、danmaku、share
-        - pages: 分 P 列表，每项含 page、cid、part、duration
-    """
-
+    """取得视频信息。"""
     # data: 接口返回的顶层数据
     # ├── bvid: 当前视频的 BV 号
     # ├── title: 当前视频的标题
@@ -291,60 +271,46 @@ def get_video_info(bvid, cookie):
     return request_json(f"{API_BASE}/x/web-interface/view?{query}", cookie)
 
 
-def get_video_pages(bvid, cookie):
-    """取得视频的所有分 P。"""
-    data = get_video_info(bvid, cookie)
-
-    return data.get("pages", [])
-
-
-def get_up_follower_count(mid, cookie):
-    """取得 UP 主的粉丝数。"""
-    query = urllib.parse.urlencode({"vmid": mid})
-    data = request_json(f"{API_BASE}/x/relation/stat?{query}", cookie)
-
-    return data.get("follower", 0)
-
-
 def search_videos(keyword, cookie, mixin_key, page=1, page_size=50):
-    """按关键词搜索视频。"""
+    """按关键词搜索视频。
+    # data: 接口返回的顶层数据
+        # ├── seid: 本次搜索的会话 ID
+        # ├── page: 当前页码
+        # ├── pagesize: 每页结果数
+        # ├── numResults: 结果总数
+        # ├── numPages: 总页数
+        # ├── suggest_keyword: 推荐搜索词
+        # ├── rqt_type: 请求类型（search）
+        # ├── exp_list: 命中的实验分组
+        # ├── is_hit_web_inf: 是否命中网页信息
+        # ├── egg_hit: 彩蛋命中标记
+        # ├── result: 视频结果列表
+        # │   └── []: 单个视频
+        # │       ├── type: 结果类型（video）
+        # │       ├── id / aid: 视频 AV 号
+        # │       ├── bvid: 视频 BV 号
+        # │       ├── title: 标题，关键词带 <em> 高亮标签
+        # │       ├── description: 视频简介
+        # │       ├── author / mid / upic: UP 主昵称、UID、头像
+        # │       ├── typeid / typename: 分区编号和分区名
+        # │       ├── arcurl: 视频播放页地址
+        # │       ├── pic: 视频封面
+        # │       ├── tag: 标签，逗号分隔
+        # │       ├── play / danmaku / like / review / favorites: 播放、弹幕、点赞、评论、收藏数
+        # │       ├── duration: 时长，格式 mm:ss
+        # │       ├── pubdate / senddate: 发布时间和入库时间
+        # │       ├── hit_columns: 关键词命中的字段
+        # │       └── ...: 直播、付费、角标等其余字段
+        # ├── show_column: 是否显示列表面板
+        # ├── in_black_key: 是否命中黑名单
+        # ├── in_white_key: 是否命中白名单
+        # └── next: 下一页页码
+    """
     keyword = keyword.strip()
 
     if not keyword:
         raise ValueError("搜索关键词不能为空")
 
-    # data: 接口返回的顶层数据
-    # ├── seid: 本次搜索的会话 ID
-    # ├── page: 当前页码
-    # ├── pagesize: 每页结果数
-    # ├── numResults: 结果总数
-    # ├── numPages: 总页数
-    # ├── suggest_keyword: 推荐搜索词
-    # ├── rqt_type: 请求类型（search）
-    # ├── exp_list: 命中的实验分组
-    # ├── is_hit_web_inf: 是否命中网页信息
-    # ├── egg_hit: 彩蛋命中标记
-    # ├── result: 视频结果列表
-    # │   └── []: 单个视频
-    # │       ├── type: 结果类型（video）
-    # │       ├── id / aid: 视频 AV 号
-    # │       ├── bvid: 视频 BV 号
-    # │       ├── title: 标题，关键词带 <em> 高亮标签
-    # │       ├── description: 视频简介
-    # │       ├── author / mid / upic: UP 主昵称、UID、头像
-    # │       ├── typeid / typename: 分区编号和分区名
-    # │       ├── arcurl: 视频播放页地址
-    # │       ├── pic: 视频封面
-    # │       ├── tag: 标签，逗号分隔
-    # │       ├── play / danmaku / like / review / favorites: 播放、弹幕、点赞、评论、收藏数
-    # │       ├── duration: 时长，格式 mm:ss
-    # │       ├── pubdate / senddate: 发布时间和入库时间
-    # │       ├── hit_columns: 关键词命中的字段
-    # │       └── ...: 直播、付费、角标等其余字段
-    # ├── show_column: 是否显示列表面板
-    # ├── in_black_key: 是否命中黑名单
-    # ├── in_white_key: 是否命中白名单
-    # └── next: 下一页页码
     data = request_wbi_json(
         "/x/web-interface/wbi/search/type",
         {
@@ -372,7 +338,42 @@ def get_user_videos(
     page_size=50,
     order="pubdate",
 ):
-    """按 UP 主 MID 分页取得公开视频。"""
+    """按 UP 主 MID 分页取得公开视频。
+    # data: 接口返回的顶层数据
+       # ├── list: UP 主空间内容
+       # │   ├── vlist: 视频列表
+       # │   │   └── []: 单个视频
+       # │   │       ├── bvid / aid: 视频 BV 号和 AV 号
+       # │   │       ├── title: 视频标题
+       # │   │       ├── author / mid: UP 主昵称和 UID
+       # │   │       ├── created: 发布时间戳
+       # │   │       ├── length: 时长，格式 mm:ss
+       # │   │       ├── pic: 视频封面
+       # │   │       ├── description: 视频简介
+       # │   │       ├── play / comment / video_review: 播放、评论、弹幕数
+       # │   │       ├── review: 点评数，通常为 0
+       # │   │       ├── typeid: 分区编号
+       # │   │       ├── copyright: 版权标记，1 自制 2 转载
+       # │   │       ├── is_union_video / is_live_playback / is_lesson_video: 联合投稿、直播回放、课程视频标记
+       # │   │       └── ...: 充电、跳转、属性等其余字段
+       # │   ├── tlist: 按分区聚合的投稿数量
+       # │   │   └── {tid}: 分区统计
+       # │   │       ├── tid: 分区编号
+       # │   │       ├── name: 分区名
+       # │   │       └── count: 该分区视频数
+       # │   └── slist: 合集/系列列表，无合集时为空
+       # ├── page: 分页信息
+       # │   ├── pn: 当前页码
+       # │   ├── ps: 每页数量
+       # │   └── count: 该 UP 主公开视频总数
+       # ├── episodic_button: 合集播放入口
+       # │   ├── text: 按钮文字（如“播放全部”）
+       # │   └── uri: 播放列表地址
+       # ├── is_risk: 是否触发风控
+       # ├── gaia_res_type: 风控类型
+       # └── gaia_data: 风控附加数据
+
+    """
     try:
         mid = int(mid)
     except (TypeError, ValueError) as exc:
@@ -381,39 +382,6 @@ def get_user_videos(
     if mid <= 0:
         raise ValueError("UP 主 MID 必须大于 0")
 
-    # data: 接口返回的顶层数据
-    # ├── list: UP 主空间内容
-    # │   ├── vlist: 视频列表
-    # │   │   └── []: 单个视频
-    # │   │       ├── bvid / aid: 视频 BV 号和 AV 号
-    # │   │       ├── title: 视频标题
-    # │   │       ├── author / mid: UP 主昵称和 UID
-    # │   │       ├── created: 发布时间戳
-    # │   │       ├── length: 时长，格式 mm:ss
-    # │   │       ├── pic: 视频封面
-    # │   │       ├── description: 视频简介
-    # │   │       ├── play / comment / video_review: 播放、评论、弹幕数
-    # │   │       ├── review: 点评数，通常为 0
-    # │   │       ├── typeid: 分区编号
-    # │   │       ├── copyright: 版权标记，1 自制 2 转载
-    # │   │       ├── is_union_video / is_live_playback / is_lesson_video: 联合投稿、直播回放、课程视频标记
-    # │   │       └── ...: 充电、跳转、属性等其余字段
-    # │   ├── tlist: 按分区聚合的投稿数量
-    # │   │   └── {tid}: 分区统计
-    # │   │       ├── tid: 分区编号
-    # │   │       ├── name: 分区名
-    # │   │       └── count: 该分区视频数
-    # │   └── slist: 合集/系列列表，无合集时为空
-    # ├── page: 分页信息
-    # │   ├── pn: 当前页码
-    # │   ├── ps: 每页数量
-    # │   └── count: 该 UP 主公开视频总数
-    # ├── episodic_button: 合集播放入口
-    # │   ├── text: 按钮文字（如“播放全部”）
-    # │   └── uri: 播放列表地址
-    # ├── is_risk: 是否触发风控
-    # ├── gaia_res_type: 风控类型
-    # └── gaia_data: 风控附加数据
     return request_wbi_json(
         "/x/space/wbi/arc/search",
         {
@@ -430,7 +398,14 @@ def get_user_videos(
 
 def get_hot_search(cookie, limit=10):
     """取得 Bilibili 搜索热搜列表。"""
-    limit = min(max(1, int(limit)), 50)
+    limit = int(limit)
+
+    if limit < 1:
+        limit = 1
+
+    if limit > 50:
+        limit = 50
+
     query = urllib.parse.urlencode({"limit": limit})
     data = request_json(
         f"{API_BASE}/x/web-interface/search/square?{query}",
@@ -532,11 +507,17 @@ def fetch_danmaku_segment(oid, aid, segment_index, cookie, mixin_key):
         "web_location": DANMAKU_WEB_LOCATION,
     }
 
-    return request_bytes(
+    status, response_body = _request(
         build_wbi_url("/x/v2/dm/wbi/web/seg.so", params, mixin_key), cookie
     )
 
+    if status == 304:
+        return b""
 
+    return response_body
+
+
+# 调试代码
 def open_in_browser(url=None, state=None, headless=False):
     """用 Playwright 打开接口地址。
      默认带cookie登录状态，方便调试接口返回的 JSON 数据。
@@ -556,9 +537,12 @@ def open_in_browser(url=None, state=None, headless=False):
 
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless=headless)
-        context = (
-            browser.new_context(storage_state=state) if state else browser.new_context()
-        )
+
+        if state:
+            context = browser.new_context(storage_state=state)
+        else:
+            context = browser.new_context()
+
         page = context.new_page()
 
         page.goto(url)
@@ -570,7 +554,7 @@ def open_in_browser(url=None, state=None, headless=False):
 if __name__ == "__main__":
     cookie = get_cookie_header()
     # open_in_browser(build_url("/x/web-interface/nav", {}))
-    # print("获取 WBI 混合密钥:" + get_wbi_mixin_key(cookie))
+    print("获取 WBI 混合密钥:" + get_wbi_mixin_key(cookie))
 
     # print(
     #     "签名参数:",
@@ -584,17 +568,17 @@ if __name__ == "__main__":
 
     # open_in_browser(build_url("/x/relation/stat", {"vmid": "2043250564"}))
 
-    open_in_browser(
-        build_wbi_url(
-            "/x/space/wbi/arc/search",
-            {
-                "mid": "2043250564",
-                "order": "click",
-                "ps": 50,
-            },
-            get_wbi_mixin_key(cookie),
-        )
-    )
+    # open_in_browser(
+    #     build_wbi_url(
+    #         "/x/space/wbi/arc/search",
+    #         {
+    #             "mid": "2043250564",
+    #             "order": "click",
+    #             "ps": 50,
+    #         },
+    #         get_wbi_mixin_key(cookie),
+    #     )
+    # )
 
     # open_in_browser(
     #     build_url(
@@ -617,16 +601,16 @@ if __name__ == "__main__":
     #     )
     # )
 
-    # open_in_browser(
-    #     build_wbi_url(
-    #         "/x/v2/reply/wbi/main",
-    #         {
-    #             "oid": "1706416465",
-    #             "offset": "CAESEDE4MzQ2MjI3MDAyMTE2MDgaADIDCLQb",
-    #             "type": 1,
-    #             "mode": 2,
-    #             "ps": 30,
-    #         },
-    #         get_wbi_mixin_key(cookie),
-    #     )
-    # )
+    open_in_browser(
+        build_wbi_url(
+            "/x/v2/reply/wbi/main",
+            {
+                "oid": "1706416465",
+                "offset": "CAESEDE4MzY1NzI0NjIzMTQ2NjAaCAoGofLF06IJMgMIwxw=",
+                "type": 1,
+                "mode": 2,
+                "ps": 30,
+            },
+            get_wbi_mixin_key(cookie),
+        )
+    )

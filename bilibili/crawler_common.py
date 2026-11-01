@@ -58,6 +58,22 @@ def clear_log_prefix():
     _LOG_CONTEXT.prefix = ""
 
 
+def _start_log_buffer():
+    """开始收集当前线程的日志，暂不直接输出。"""
+    _LOG_CONTEXT.log_buffer = []
+
+
+def _take_log_buffer():
+    """结束收集并返回当前线程缓存的日志行。"""
+    lines = getattr(_LOG_CONTEXT, "log_buffer", None)
+    _LOG_CONTEXT.log_buffer = None
+
+    if lines is None:
+        return []
+
+    return lines
+
+
 def log(message):
     """原子输出一行或多行日志，并自动加线程前缀。"""
     prefix = getattr(_LOG_CONTEXT, "prefix", "")
@@ -68,7 +84,20 @@ def log(message):
             text = line
             if prefix:
                 text = f"[{prefix}] {line}"
-            print(text, flush=True)
+
+            log_buffer = getattr(_LOG_CONTEXT, "log_buffer", None)
+
+            if log_buffer is None:
+                print(text, flush=True)
+            else:
+                log_buffer.append(text)
+
+
+def _print_log_lines(lines):
+    """在调用线程中整组输出日志。"""
+    with _LOG_LOCK:
+        for line in lines:
+            print(line, flush=True)
 
 
 # 文本清理
@@ -489,10 +518,34 @@ def write_json(path, data):
 # 并发任务与请求重试
 
 
-def run_concurrently(function, values, workers, label, on_progress=None):
+def _run_task_with_log_buffer(function, value):
+    """执行单个任务，同时收集该任务的日志和异常。"""
+    _start_log_buffer()
+    result = None
+    error = None
+
+    try:
+        result = function(value)
+    except Exception as exc:
+        error = exc
+    finally:
+        lines = _take_log_buffer()
+
+    return result, error, lines
+
+
+def run_concurrently(
+    function,
+    values,
+    workers,
+    label,
+    on_progress=None,
+    ordered_logs=False,
+):
     """按配置并发或顺序执行任务，并按输入顺序返回结果,返回值为function()的返回值。
 
     未提供 on_progress 时，每完成 10 个任务及全部完成时打印进度。
+    ordered_logs=True 时，每个任务的日志先独立缓存，再按输入顺序整组输出。
     """
     total = len(values)
 
@@ -503,26 +556,58 @@ def run_concurrently(function, values, workers, label, on_progress=None):
     if requested_workers < 1:
         requested_workers = 1
 
-    worker_count = min(requested_workers, total)
+    if requested_workers < total:
+        worker_count = requested_workers
+    else:
+        worker_count = total
 
     results = [None] * total
     future_to_index = {}
+    task_errors = {}
+    task_logs = {}
+    next_log_index = 0
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         for index, value in enumerate(values):
-            future = executor.submit(function, value)
+            if ordered_logs:
+                future = executor.submit(
+                    _run_task_with_log_buffer,
+                    function,
+                    value,
+                )
+            else:
+                future = executor.submit(function, value)
+
             future_to_index[future] = index
 
         completed = 0
         for future in as_completed(future_to_index):
             index = future_to_index[future]
-            results[index] = future.result()
+
+            if ordered_logs:
+                result, error, lines = future.result()
+                results[index] = result
+                task_errors[index] = error
+                task_logs[index] = lines
+
+                while next_log_index in task_logs:
+                    _print_log_lines(task_logs[next_log_index])
+                    next_log_index += 1
+            else:
+                results[index] = future.result()
+
             completed += 1
 
             if on_progress is not None:
                 on_progress(completed, total)
             elif completed == total or completed % 10 == 0:
                 print(f"{label}进度：{completed}/{total}")
+
+    for index in range(total):
+        error = task_errors.get(index)
+
+        if error is not None:
+            raise error
 
     return results
 

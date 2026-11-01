@@ -41,7 +41,11 @@ def parse_page_range(value):
 
     try:
         start = int(parts[0])
-        end = int(parts[1]) if len(parts) == 2 else start
+
+        if len(parts) == 2:
+            end = int(parts[1])
+        else:
+            end = start
     except ValueError as exc:
         raise argparse.ArgumentTypeError("页码范围必须是整数") from exc
 

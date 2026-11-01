@@ -17,6 +17,7 @@
 - 直连弹幕分段接口采集弹幕，不需要打开播放器。
 - 使用 Protobuf 解码弹幕，去重后保存为 CSV。
 - 通过 UP 主 MID 采集其全部公开视频并补充互动数据。
+- 可对关键词、UP 主或热搜搜索结果执行可选的深度采集。
 - 自动处理单 P 和多 P 视频。
 - 复用 Playwright 登录状态，减少重复登录。
 
@@ -36,7 +37,8 @@
 | `crawler_search.py` | 按关键词搜索视频并保存 CSV |
 | `crawler_hot.py` | 遍历热搜词搜索视频 |
 | `crawler_up.py` | 按 MID 采集 UP 主全部公开视频 |
-| `crawler_common.py` | 爬虫共用的请求、并发、数据构建，以及文件名/时间戳等文件输出工具 |
+| `crawler_for.py` | 汇总 BVID，并批量执行视频信息、字幕、弹幕和评论采集 |
+| `crawler_common.py` | 日志、格式化、并发、请求重试和文件输出等公共工具 |
 | `dm.proto` | 弹幕 Protobuf 结构定义 |
 | `dm_pb2.py` | 根据 `dm.proto` 生成的 Python 代码 |
 | `qt_app.py` | Qt 图形界面的兼容启动入口 |
@@ -48,6 +50,24 @@
 | `qt_ui/system_shell.py` | 打开目录、前置资源管理器窗口等系统互操作 |
 | `assets/` | 图形界面资源，含图标、图片和 `app.qss` 样式表 |
 | `../crawler_web/` | Vue 3 + Vite Web 前端，当前登录状态仅在前端模拟 |
+
+## 对象说明
+
+url对象: urllib.parse.urlparse() 返回的对象，包含 scheme, netloc, path, params, query, fragment 等属性。split不含params
+
+httpclient对象: 手动创建的connection连接对象后，调用request()方法发送请求，getresponse()方法获取响应对象，read()方法读取响应体字节。
+
+path对象: pathlib.Path() 返回的对象，包含 name , stem, suffix ,parent ,path等属性。stem是文件名不带后缀，suffix是文件后缀名, path是完整路径,parent是父目录。
+
+mixin_key: Bilibili WBI 签名使用的混合密钥用于签名。
+
+future对象: concurrent.futures.Future 表示异步任务的执行状态和结果，调用 result() 会等待任务完成并返回结果，任务异常也会由 result() 抛出。
+
+线程池: concurrent.futures.ThreadPoolExecutor 管理的线程集合，通过 submit() 提交任务并返回 future 对象，可限制同时执行的最大任务数；as_completed() 按任务完成顺序返回 future 对象。
+
+csv.DictReader对象: 将 CSV 的每一行读取为字典，默认使用首行作为字段名，可通过 fieldnames 指定字段名。
+
+csv.DictWriter对象: 按 fieldnames 指定的列顺序把字典写入 CSV，调用 writeheader() 写表头，调用 writerow() 或 writerows() 写数据行。
 
 ## Web 前端
 
@@ -211,6 +231,18 @@ bilibili -H
 bilibili -H --limit 20
 ```
 
+关键词搜索、UP 主视频或热搜搜索完成后，可以继续对结果中的 BVID 执行
+深度采集：
+
+```powershell
+bilibili -k "Python 教程" --with-details --detail-workers 2
+bilibili -m 267068018 --with-details --detail-workers 2
+bilibili -H --limit 20 --with-details --detail-workers 2
+```
+
+`--detail-workers` 控制同时深度采集的视频数量，默认 `2`，最大 `5`，并且
+必须和 `--with-details` 一起使用。
+
 依次运行全部功能：
 
 ```powershell
@@ -277,9 +309,9 @@ conda activate <环境名>
 ```text
 output/
 ├── video/         单视频数据
-├── search/        关键词搜索
-├── up/            UP 主视频
-└── hot/           热搜搜索
+├── 关键词搜索/     关键词搜索
+├── UP主/           UP 主视频
+└── 热搜/           热搜搜索
 ```
 
 视频数据保存在 `output/video/`：
@@ -313,27 +345,32 @@ danmaku_{分P标题}_p{分P号}.csv
 搜索结果保存在：
 
 ```text
-output/search/{关键词}/search_{时间}_{数据量}.csv
+output/关键词搜索/{关键词}+{运行时间}/search_{时间}_{数据量}.csv
 ```
 
 UP 主视频保存在：
 
 ```text
-output/up/{MID}+{UP主名字}/videos_{时间}_{数据量}.csv
+output/UP主/{MID}+{UP主名字}+{运行时间}/videos_{时间}_{数据量}.csv
 ```
 
 热搜搜索会按运行时间创建目录，并把每个热搜词的结果保存到对应子目录：
 
 ```text
-output/hot/{运行时间}/{热搜词}/search_{时间}_{数据量}.csv
-output/hot/{运行时间}/hot_list.csv
+output/热搜/{运行时间}/关键词/{热搜词}/search_{时间}_{数据量}.csv
+output/热搜/{运行时间}/hot_list.csv
 ```
+
+启用 `--with-details` 后，会在对应的搜索或 UP 主结果目录下创建
+`视频详情/`，每个视频的目录名为 `{视频标题}_{BV号}_{UP主}/`，内容与
+普通视频目录一致。
 
 搜索 CSV 包含 `bvid`、标题、发布时间、作者、作者 mid、分区、标签、视频
 时长、封面 URL、点赞数、评论数、收藏数、作者粉丝数、播放数和弹幕数。
-除作者粉丝数外，其余字段直接来自搜索结果，不再批量请求视频详情；作者
-粉丝数按作者 mid 缓存，同一作者只请求一次。搜索接口不返回分享数，所以
-搜索结果不含 `share_count` 列（UP 主视频走视频详情，仍保留该列）。
+除作者粉丝数外，其余字段直接来自搜索结果。默认不批量请求视频详情；
+启用 `--with-details` 后才继续采集每个 BVID 的完整数据。作者粉丝数按
+作者 mid 缓存，同一作者只请求一次。搜索接口不返回分享数，所以搜索结果
+不含 `share_count` 列（UP 主视频走视频详情，仍保留该列）。
 搜索页和作者粉丝数请求使用线程池并发，结果仍按搜索顺序保存。热搜词之间
 按榜单顺序串行处理，单个热搜词内部的搜索请求仍按 `-w` 指定的并发数执行。
 
@@ -341,7 +378,8 @@ output/hot/{运行时间}/hot_list.csv
 “视频编号”或“标题”单元格即可跳转到对应的 Bilibili 页面。为降低内存
 占用，数据预览最多加载前 5000 行，完整数据仍保存在原始文件中。封面地址
 列可单击打开封面，鼠标悬停时会显示链接反馈。GUI 关闭时会保存上次输入的
-关键词、范围、并发数和工作区，重新打开后自动恢复对应的数据面板。
+关键词、范围、并发数、深度采集设置和工作区，重新打开后自动恢复对应的
+数据面板。
 
 ## 视频信息
 
@@ -401,11 +439,6 @@ CSV 列如下：
 | `image_urls` | 评论图片URL，多个地址用 `|` 分隔 |
 
 图片只保存 URL，不下载图片文件。
-
-命令行参数：
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
 
 评论正文中的连续空格会压缩为一个空格，连续换行会转换为一个可见的
 `\n` 字符。没有图片时 `image_urls` 列为空。

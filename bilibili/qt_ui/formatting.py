@@ -198,11 +198,11 @@ def format_preview_value(column, value):
 
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
-        return (
-            f"{hours}:{minutes:02d}:{seconds:02d}"
-            if hours
-            else f"{minutes}:{seconds:02d}"
-        )
+
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+        return f"{minutes}:{seconds:02d}"
 
     if column == "status":
         return {
@@ -211,7 +211,10 @@ def format_preview_value(column, value):
         }.get(str(value).lower(), str(value))
 
     if column == "state":
-        return "正常" if str(value) == "0" else str(value)
+        if str(value) == "0":
+            return "正常"
+
+        return str(value)
 
     if column == "时间(ms)":
         try:
@@ -231,11 +234,11 @@ def format_preview_value(column, value):
 
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
-        return (
-            f"{int(hours):02d}:{int(minutes):02d}:{seconds:06.3f}"
-            if hours
-            else f"{int(minutes):02d}:{seconds:06.3f}"
-        )
+
+        if hours:
+            return f"{int(hours):02d}:{int(minutes):02d}:{seconds:06.3f}"
+
+        return f"{int(minutes):02d}:{seconds:06.3f}"
 
     return str(value)
 
@@ -302,11 +305,11 @@ def friendly_file_name(path):
         if match:
             part = stem[len("danmaku_"):match.start()]
             number = match.group(1)
-            return (
-                f"弹幕 · {part} (P{number})"
-                if part
-                else f"弹幕 P{number}"
-            )
+
+            if part:
+                return f"弹幕 · {part} (P{number})"
+
+            return f"弹幕 P{number}"
 
         return f"弹幕 · {stem[len('danmaku_'):]}"
 

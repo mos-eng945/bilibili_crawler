@@ -95,7 +95,11 @@ VIDEO_ACTION_FLAGS = {
 def newest_path(paths):
     """按修改时间取最新的一个路径，空列表返回 None。"""
     paths = list(paths)
-    return max(paths, key=lambda path: path.stat().st_mtime) if paths else None
+
+    if paths:
+        return max(paths, key=lambda path: path.stat().st_mtime)
+
+    return None
 
 
 def latest_directory_name(root):
@@ -116,7 +120,10 @@ def latest_directory_name(root):
 
         candidates.append((modified_at, path.name))
 
-    return max(candidates)[1] if candidates else ""
+    if candidates:
+        return max(candidates)[1]
+
+    return ""
 
 
 def video_project_dir(bvid):
@@ -126,15 +133,18 @@ def video_project_dir(bvid):
     if not bvid or not VIDEO_OUTPUT_DIR.exists():
         return None
 
-    matches = [
-        path
-        for path in VIDEO_OUTPUT_DIR.iterdir()
-        if path.is_dir()
-        and (
-            path.name.startswith(f"{bvid}_")
-            or path.name.endswith(f"_{bvid}")
-        )
-    ]
+    matches = []
+
+    for path in VIDEO_OUTPUT_DIR.iterdir():
+        if not path.is_dir():
+            continue
+
+        starts_with_bvid = path.name.startswith(f"{bvid}_")
+        ends_with_bvid = path.name.endswith(f"_{bvid}")
+
+        if starts_with_bvid or ends_with_bvid:
+            matches.append(path)
+
     return newest_path(matches)
 
 
@@ -156,12 +166,15 @@ def find_user_dir(mid):
     if not UP_OUTPUT_DIR.exists():
         return None
 
-    matches = [
-        path
-        for path in UP_OUTPUT_DIR.iterdir()
-        if path.is_dir()
-        and (path.name == mid or path.name.startswith(f"{mid}+"))
-    ]
+    matches = []
+
+    for path in UP_OUTPUT_DIR.iterdir():
+        if not path.is_dir():
+            continue
+
+        if path.name == mid or path.name.startswith(f"{mid}+"):
+            matches.append(path)
+
     return newest_path(matches)
 
 
@@ -170,7 +183,12 @@ def hot_project_dir():
     if not HOT_OUTPUT_DIR.exists():
         return None
 
-    runs = [path for path in HOT_OUTPUT_DIR.iterdir() if path.is_dir()]
+    runs = []
+
+    for path in HOT_OUTPUT_DIR.iterdir():
+        if path.is_dir():
+            runs.append(path)
+
     return newest_path(runs) or HOT_OUTPUT_DIR
 
 
@@ -482,9 +500,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(label_widget)
 
         value_widget = QLabel(value)
-        value_widget.setObjectName(
-            "MetricValueAccent" if accent else "MetricValue"
-        )
+
+        if accent:
+            value_widget.setObjectName("MetricValueAccent")
+        else:
+            value_widget.setObjectName("MetricValue")
+
         layout.addWidget(value_widget)
         return card, value_widget
 
@@ -492,7 +513,13 @@ class MainWindow(QMainWindow):
         if not self._nav_buttons:
             return
 
-        index = max(0, min(index, self.pages.count() - 1))
+        if index < 0:
+            index = 0
+
+        last_index = self.pages.count() - 1
+        if index > last_index:
+            index = last_index
+
         self.pages.setCurrentIndex(index)
         self._nav_buttons[index].setChecked(True)
         self.page_title.setText(self._nav_buttons[index].text())
@@ -547,14 +574,13 @@ class MainWindow(QMainWindow):
 
         def toggle_command(checked):
             preview.setVisible(checked)
-            toggle.setText(
-                "收起命令行" if checked else "查看命令行"
-            )
-            toggle.setArrowType(
-                Qt.ArrowType.DownArrow
-                if checked
-                else Qt.ArrowType.RightArrow
-            )
+
+            if checked:
+                toggle.setText("收起命令行")
+                toggle.setArrowType(Qt.ArrowType.DownArrow)
+            else:
+                toggle.setText("查看命令行")
+                toggle.setArrowType(Qt.ArrowType.RightArrow)
 
         toggle.toggled.connect(toggle_command)
         return group, summary, preview
@@ -822,12 +848,16 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _count_project_files(path):
         try:
-            return sum(
-                1
-                for item in path.rglob("*")
-                if item.is_file()
-                and item.suffix.lower() in {".csv", ".json"}
-            )
+            count = 0
+
+            for item in path.rglob("*"):
+                if not item.is_file():
+                    continue
+
+                if item.suffix.lower() in {".csv", ".json"}:
+                    count += 1
+
+            return count
         except OSError:
             return 0
 
@@ -842,7 +872,11 @@ class MainWindow(QMainWindow):
         for panel in self._project_data_panels:
             path = self._current_project_path(panel["kind"])
             has_path = path is not None and path.exists()
-            file_count = self._count_project_files(path) if has_path else 0
+
+            if has_path:
+                file_count = self._count_project_files(path)
+            else:
+                file_count = 0
 
             if file_count:
                 panel["count"].setText(f"{file_count} 项数据")
@@ -868,7 +902,12 @@ class MainWindow(QMainWindow):
                     180,
                 )
             )
-            panel["path"].setToolTip(str(path) if has_path else "")
+            if has_path:
+                path_tooltip = str(path)
+            else:
+                path_tooltip = ""
+
+            panel["path"].setToolTip(path_tooltip)
             panel["data_button"].setEnabled(has_path)
 
     def _show_project_data(self, kind):
@@ -975,13 +1014,26 @@ class MainWindow(QMainWindow):
     def _balance_parameter_rows(grid):
         """让每个「可见行」均分卡片高度，行距才不会忽大忽小。"""
         for row in range(grid.rowCount()):
-            has_visible = any(
-                grid.itemAtPosition(row, column) is not None
-                and grid.itemAtPosition(row, column).widget() is not None
-                and grid.itemAtPosition(row, column).widget().isVisible()
-                for column in range(grid.columnCount())
-            )
-            grid.setRowStretch(row, 1 if has_visible else 0)
+            has_visible = False
+
+            for column in range(grid.columnCount()):
+                item = grid.itemAtPosition(row, column)
+
+                if item is None:
+                    continue
+
+                widget = item.widget()
+
+                if widget is not None and widget.isVisible():
+                    has_visible = True
+                    break
+
+            if has_visible:
+                row_stretch = 1
+            else:
+                row_stretch = 0
+
+            grid.setRowStretch(row, row_stretch)
 
     def _build_video_tab(self):
         page = QWidget()
@@ -1471,10 +1523,17 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _preview_command(args):
         parts = [str(ENTRY_SCRIPT), *args]
-        return " ".join(
-            f'"{arg}"' if " " in str(arg) else str(arg)
-            for arg in parts
-        )
+        formatted_parts = []
+
+        for arg in parts:
+            arg_text = str(arg)
+
+            if " " in arg_text:
+                formatted_parts.append(f'"{arg_text}"')
+            else:
+                formatted_parts.append(arg_text)
+
+        return " ".join(formatted_parts)
 
     def _update_video_preview(self, *_):
         if not hasattr(self, "video_execution_summary"):
@@ -1713,7 +1772,10 @@ class MainWindow(QMainWindow):
         except argparse.ArgumentTypeError:
             return None
 
-        return str(start) if start == end else f"{start},{end}"
+        if start == end:
+            return str(start)
+
+        return f"{start},{end}"
 
     def _read_page_range(self, value):
         page_range = self._normalize_page_range(value)
@@ -1871,17 +1933,23 @@ class MainWindow(QMainWindow):
             self._refresh_project_data()
             self._set_busy(False, "已完成")
             self.statusBar().showMessage("任务完成", 5000)
-            project_kind = {
+            page_kinds = {
                 0: "video",
                 1: "search",
                 2: "user",
                 3: "hot",
-            }.get(self._task_page) if self._task_has_output else None
-            project_path = (
-                self._current_project_path(project_kind)
-                if project_kind
-                else None
-            )
+            }
+
+            if self._task_has_output:
+                project_kind = page_kinds.get(self._task_page)
+            else:
+                project_kind = None
+
+            if project_kind:
+                project_path = self._current_project_path(project_kind)
+            else:
+                project_path = None
+
             CompletionDialog(
                 self._task_title or "任务",
                 path=project_path,
@@ -1973,7 +2041,11 @@ class MainWindow(QMainWindow):
         self.log_edit.ensureCursorVisible()
 
     def _log_header(self, title, args):
-        separator = "\n" if self.log_edit.toPlainText() else ""
+        if self.log_edit.toPlainText():
+            separator = "\n"
+        else:
+            separator = ""
+
         command = " ".join([str(ENTRY_SCRIPT), *args])
         self._append_log(
             f"{separator}[{title}]\n$ {sys.executable} {command}\n"
