@@ -31,6 +31,7 @@ UP_FIELDS = ["mid", "up_name", "face_url", "follower_count"]
 
 
 def to_int(value):
+    """安全地把值转换成整数，失败时返回 0。"""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -38,6 +39,7 @@ def to_int(value):
 
 
 def parse_datetime(value):
+    """把字符串解析成 `YYYY-MM-DD HH:MM:SS`，失败时返回 None。"""
     if not value:
         return None
     text = str(value).strip()
@@ -56,6 +58,7 @@ def parse_datetime(value):
 
 
 def split_tags(value):
+    """把逗号分隔的标签字符串拆成标签列表。"""
     if not value:
         return []
     return [tag.strip() for tag in str(value).split(",") if tag.strip()]
@@ -148,6 +151,7 @@ def normalize_info_row(data):
 
 
 def upsert_video(cursor, video):
+    """插入或更新一条视频元数据。"""
     columns = ", ".join(video)
     placeholders = ", ".join(["%s"] * len(video))
     updates = ", ".join([f"{name} = new.{name}" for name in video if name != "bvid"])
@@ -159,6 +163,7 @@ def upsert_video(cursor, video):
 
 
 def upsert_up(cursor, up):
+    """插入或更新一条 UP 主信息。"""
     columns = ", ".join(UP_FIELDS)
     placeholders = ", ".join(["%s"] * len(UP_FIELDS))
     updates = ", ".join([f"{name} = new.{name}" for name in UP_FIELDS if name != "mid"])
@@ -170,6 +175,7 @@ def upsert_up(cursor, up):
 
 
 def upsert_tags(cursor, bvid, tags):
+    """为视频写入标签，重复标签会被忽略。"""
     for tag in tags:
         cursor.execute(
             "INSERT IGNORE INTO video_tags (bvid, tag) VALUES (%s, %s)",
@@ -178,6 +184,7 @@ def upsert_tags(cursor, bvid, tags):
 
 
 def import_list_csv(path, cursor):
+    """导入一个搜索或 UP 主视频 CSV 文件。"""
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -192,6 +199,7 @@ def import_list_csv(path, cursor):
 
 
 def import_video_info(path, cursor):
+    """导入单个 `video_info.json` 文件。"""
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
@@ -206,6 +214,7 @@ def import_video_info(path, cursor):
 
 
 def import_all(output_dir):
+    """导入目录下所有视频元数据、UP 主和标签文件。"""
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
@@ -225,6 +234,7 @@ def import_all(output_dir):
 
 
 def main():
+    """从默认输出目录导入全部视频元数据。"""
     from config import OUTPUT_DIR
     import_all(OUTPUT_DIR)
     print("Video metadata import finished.")

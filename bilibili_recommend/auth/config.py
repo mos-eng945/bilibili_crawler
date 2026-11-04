@@ -12,6 +12,7 @@ ENV_FILE = AUTH_DIR.parent / "database" / ".env"
 
 
 def _load_env_file(path):
+    """把 `.env` 文件中的 KEY=VALUE 写入当前进程环境变量。"""
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():

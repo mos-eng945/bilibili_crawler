@@ -80,10 +80,12 @@ CREATE TABLE IF NOT EXISTS subtitles (
     bvid       VARCHAR(32) NOT NULL,
     cid        BIGINT DEFAULT 0,
     page       INT DEFAULT 0,
+    language       VARCHAR(32) NOT NULL DEFAULT '',
+    language_name  VARCHAR(64) NOT NULL DEFAULT '',
     start_time DECIMAL(12, 3) DEFAULT 0,
     end_time   DECIMAL(12, 3) DEFAULT 0,
     content    TEXT,
-    UNIQUE KEY uk_subtitle (bvid, cid, page, start_time),
+    UNIQUE KEY uk_subtitle (bvid, cid, page, language, start_time),
     KEY idx_bvid (bvid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -24,6 +24,8 @@ STOPWORDS = {
     "的话", "东西", "比如说", "应该", "其实", "是不是", "那么",
 }
 
+PREFERRED_SUBTITLE_LANGUAGES = ("ai-zh", "zh-CN", "zh-Hans", "zh")
+
 
 POSITIVE_WORDS = {
     "清楚", "明白", "懂了", "听懂", "有用", "详细", "感谢", "谢谢", "厉害",
@@ -75,10 +77,12 @@ CREATE TABLE IF NOT EXISTS video_scores (
 
 
 def get_connection():
+    """创建并返回一个 MySQL 连接。"""
     return pymysql.connect(**MYSQL_CONFIG)
 
 
 def normalize_popularity(view, like, favorite, danmaku):
+    """把播放、点赞、收藏和弹幕数据归一化成 0 到 1 的热度分。"""
     view_score = min(math.log10(view + 1) / 8.0, 1.0) * 100
     like_rate = like / view if view else 0
     favorite_rate = favorite / view if view else 0
@@ -94,6 +98,7 @@ def normalize_popularity(view, like, favorite, danmaku):
 
 
 def classify_sentiment(text):
+    """把单条弹幕分类为正面、负面或中性。"""
     try:
         from snownlp import SnowNLP
 
@@ -113,8 +118,9 @@ def classify_sentiment(text):
 
 
 def analyze_danmaku(bvid, cursor):
+    """计算视频弹幕的归一化情感得分和弹幕数量。"""
     cursor.execute(
-        "SELECT content FROM danmaku_clean WHERE bvid = %s",
+        "SELECT content FROM danmaku WHERE bvid = %s",
         (bvid,),
     )
     rows = cursor.fetchall()
@@ -130,6 +136,7 @@ def analyze_danmaku(bvid, cursor):
 
 
 def comment_quality(message, like_count):
+    """根据文本长度、点赞、信息量和垃圾惩罚计算评论质量分。"""
     text = message or ""
     length_score = min(len(text) / 50.0, 1.0)
     like_score = min(like_count / 20.0, 1.0)
@@ -155,8 +162,9 @@ def comment_quality(message, like_count):
 
 
 def analyze_comments(bvid, cursor):
+    """计算视频所有评论的平均质量分和数量。"""
     cursor.execute(
-        "SELECT message, like_count FROM comments_clean WHERE bvid = %s",
+        "SELECT message, like_count FROM comments WHERE bvid = %s",
         (bvid,),
     )
     rows = cursor.fetchall()
@@ -168,15 +176,26 @@ def analyze_comments(bvid, cursor):
 
 
 def analyze_subtitles(bvid, cursor):
+    """选择一种优先语言提取字幕关键词，并返回字幕数量和分类提示。"""
     cursor.execute(
-        "SELECT content FROM subtitles WHERE bvid = %s",
+        "SELECT language, content FROM subtitles WHERE bvid = %s",
         (bvid,),
     )
     rows = cursor.fetchall()
     if not rows:
         return None, 0, None
 
-    text = "\n".join(row[0] or "" for row in rows)
+    selected_rows = None
+    for language in PREFERRED_SUBTITLE_LANGUAGES:
+        matched = [row for row in rows if (row[0] or "") == language]
+        if matched:
+            selected_rows = matched
+            break
+
+    if selected_rows is None:
+        selected_rows = [rows[0]]
+
+    text = "\n".join(row[1] or "" for row in selected_rows)
     try:
         import jieba.analyse
 
@@ -195,10 +214,11 @@ def analyze_subtitles(bvid, cursor):
         if scores:
             category_hint = max(scores, key=scores.get)
 
-    return ",".join(keywords[:20]), len(rows), category_hint
+    return ",".join(keywords[:20]), len(selected_rows), category_hint
 
 
 def main():
+    """重建 `video_scores` 表，并为所有视频计算评分和分析结果。"""
     connection = get_connection()
     try:
         with connection.cursor() as cursor:

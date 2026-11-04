@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS video_texts (
 
 
 def main():
+    """为所有视频重建 `video_texts` 表，供 TF-IDF 相似度使用。"""
     connection = pymysql.connect(**MYSQL_CONFIG)
     try:
         with connection.cursor() as cursor:

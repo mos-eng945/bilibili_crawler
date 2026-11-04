@@ -24,5 +24,6 @@ def ensure_database():
 
 
 def get_connection():
+    """创建并返回一个 MySQL 连接。"""
     return pymysql.connect(**MYSQL_CONFIG)
 

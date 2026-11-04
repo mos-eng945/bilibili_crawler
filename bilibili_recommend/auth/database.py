@@ -50,10 +50,12 @@ CREATE TABLE IF NOT EXISTS search_history (
 
 
 def get_connection():
+    """创建并返回一个 MySQL 连接。"""
     return pymysql.connect(**MYSQL_CONFIG)
 
 
 def ensure_tables():
+    """确保认证和用户功能所需的表都存在。"""
     connection = get_connection()
     try:
         with connection.cursor() as cursor:

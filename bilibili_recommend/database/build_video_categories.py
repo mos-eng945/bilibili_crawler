@@ -29,15 +29,18 @@ CREATE TABLE IF NOT EXISTS video_categories (
 
 
 def load_categories():
+    """读取并返回 `categories.yaml` 中的学习方向分类。"""
     data = yaml.safe_load(CATEGORIES_FILE.read_text(encoding="utf-8"))
     return data["categories"]
 
 
 def lower_text(value):
+    """把文本转小写，空值或 None 返回空字符串。"""
     return (value or "").lower()
 
 
 def build_video_text(video, tags, keywords):
+    """拼接视频标题、简介、分区、标签和字幕关键词，供分类匹配使用。"""
     parts = [
         video.get("title", ""),
         video.get("description", ""),
@@ -49,6 +52,7 @@ def build_video_text(video, tags, keywords):
 
 
 def match_categories(text, partition_name, categories):
+    """根据关键词命中和分区匹配给视频打分，返回前三个分类。"""
     matches = []
 
     for category in categories:
@@ -71,6 +75,7 @@ def match_categories(text, partition_name, categories):
 
 
 def main():
+    """重建 `video_categories` 表，并为所有视频分配学习方向。"""
     categories = load_categories()
 
     connection = pymysql.connect(**MYSQL_CONFIG)

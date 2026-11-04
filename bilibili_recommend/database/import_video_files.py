@@ -40,6 +40,7 @@ COMMENT_FIELDS = [
 
 
 def to_int(value):
+    """安全地把值转换成整数，失败时返回 0。"""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -47,6 +48,7 @@ def to_int(value):
 
 
 def parse_datetime(value):
+    """把字符串解析成 `YYYY-MM-DD HH:MM:SS`，失败时返回 None。"""
     if not value:
         return None
     text = str(value).strip()
@@ -65,6 +67,7 @@ def parse_datetime(value):
 
 
 def hms_to_seconds(value):
+    """把 `HH:MM:SS` 文本转换成秒数。"""
     parts = str(value or "").split(":")
     if len(parts) != 3:
         return 0
@@ -76,6 +79,7 @@ def hms_to_seconds(value):
 
 
 def extract_bvid(folder):
+    """从视频目录名中提取 BV 号。"""
     name = folder.name
     if name.startswith("BV") and "_" in name:
         return name.split("_", 1)[0]
@@ -83,6 +87,7 @@ def extract_bvid(folder):
 
 
 def import_danmaku(path, bvid, cursor):
+    """导入单个弹幕 CSV 文件。"""
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -116,6 +121,7 @@ def import_danmaku(path, bvid, cursor):
 
 
 def import_comments(path, bvid, cursor):
+    """导入单个评论 CSV 文件。"""
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -155,11 +161,14 @@ def import_comments(path, bvid, cursor):
 
 
 def import_subtitle(path, bvid, cursor):
+    """导入单个字幕 JSON 文件，并写入语言信息。"""
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
     cid = to_int(data.get("cid"))
     page = to_int(data.get("page"))
+    language = str(data.get("language") or "").strip()[:32]
+    language_name = str(data.get("language_name") or "").strip()[:64]
     body = data.get("subtitle", {}).get("body", [])
 
     for item in body:
@@ -170,10 +179,14 @@ def import_subtitle(path, bvid, cursor):
 
         cursor.execute(
             """
-            INSERT INTO subtitles (bvid, cid, page, start_time, end_time, content)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO subtitles (
+                bvid, cid, page, language, language_name,
+                start_time, end_time, content
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             AS new
             ON DUPLICATE KEY UPDATE
+                language_name = new.language_name,
                 end_time = new.end_time,
                 content = new.content
             """,
@@ -181,6 +194,8 @@ def import_subtitle(path, bvid, cursor):
                 bvid,
                 cid,
                 page,
+                language,
+                language_name,
                 start_time,
                 float(item.get("to", 0) or 0),
                 content,
@@ -189,6 +204,7 @@ def import_subtitle(path, bvid, cursor):
 
 
 def import_video_folder(folder, cursor):
+    """导入单个视频目录下的弹幕、评论和字幕文件。"""
     bvid = extract_bvid(folder)
 
     for path in folder.glob("danmaku_*.csv"):
@@ -202,6 +218,7 @@ def import_video_folder(folder, cursor):
 
 
 def import_all(output_dir):
+    """遍历输出目录，导入所有视频的弹幕、评论和字幕。"""
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
@@ -219,6 +236,7 @@ def import_all(output_dir):
 
 
 def main():
+    """从默认输出目录导入全部弹幕、评论和字幕。"""
     from config import OUTPUT_DIR
     import_all(OUTPUT_DIR)
     print("Danmaku, comments and subtitles import finished.")
